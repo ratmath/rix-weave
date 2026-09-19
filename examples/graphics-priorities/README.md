@@ -2,7 +2,8 @@
 
 Open this directory in RiX Notebook, or open a ZIP of the directory in the
 browser notebook. It contains five notebooks with five executable RiX studies
-for each active graphics priority. The examples are original RiX constructions
+for each original graphics priority, plus a focused coordinate-disclosure study.
+The examples are original RiX constructions
 inspired by public feature examples; they do not reproduce another product's
 source.
 
@@ -18,6 +19,8 @@ The project is also an acceptance corpus:
    implicit surfaces, volumes, richer materials, and higher-dimensional projection.
 5. **Semantic animation** — Timeline scenes and manifests for matching, camera,
    paths, construction steps, formulas, captions, and media-export requirements.
+6. **Coordinate disclosures** — exact source tables, reversed/narrow intervals,
+   rounding collisions, clipping, and keyboard/zoom inspection shared with Web.
 
 ## Host relationship
 
