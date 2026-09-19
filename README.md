@@ -315,7 +315,6 @@ Reconciled 2026-09-19. The umbrella `ratmath/WORK_PLAN.md` (O3–O7, H2,
 R2, C3) is the execution queue. Current CodeMirror editing and native live HTML
 export are delivered features, not future foundation work.
 
-- Add named export profiles to `project.toml` and `notebook.toml`.
 - Preserve cross-note figure labels/references and resolve target-specific
   SVG/PNG assets through shared publication services.
 - Complete shared language-service completion/diagnostic integration in both
@@ -362,3 +361,23 @@ The engine also exposes `exportOutputBundle(value)`/`importOutputBundle(json)`
 for host integrations. Imports validate the saved bytes without reopening any
 original path or rerunning source. See
 `../rix/documentation/eval/output-assets.md` for limits and the versioned format.
+
+## Named publication profiles
+
+Project and notebook manifests support `[export_profiles.NAME]` tables with
+`targets`, `plugins`, partial publication `plan`, named RiX `inputs`, and finite
+budgets. `default_export_profile` selects the default; notebook profiles override
+matching project profiles. Export offers saved profiles alongside Custom targets,
+and native Quick export uses the default. Ordinary manifest edits preserve them.
+
+Native profiles build a complete staged directory with rollback. Browser profiles
+create a complete ZIP before download. Both record artifact hashes and diagnostics
+in `manifest.json`, preserve ordinary Markdown prose and local images, and include
+portable output bundles. Native live HTML keeps visible initial output while its
+local runtime starts. Browser live requests retain a static result with a warning.
+Notebook binary requests produce explicit source fallbacks: use CLI publication
+builds for native LaTeX/PDF/PNG/GIF tools. Cancellation/time budgets in the current
+Notebook engine are cooperative between export steps, not preemptive inside a cell.
+
+See [publication workflows](../rix/documentation/eval/publication-workflows.md)
+and the [runnable showcase](../rix/examples/publication-workflow/README.md).

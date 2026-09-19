@@ -1,3 +1,4 @@
+import { createPublicationProfile, parsePublicationProfiles, serializePublicationProfiles } from "../../../rix/src/runtime/publication-workflow.js";
 import { DEFAULT_PROJECT_THEME, parseProjectTheme, projectThemeToml } from "./theme.js";
 import { assertDocumentStore } from "../../docshell/src/contracts.js";
 
@@ -22,21 +23,23 @@ function tomlString(value) {
   return JSON.stringify(value);
 }
 
-function projectToml(title, notebooks, quickExportScope = "project", plugins = [], pluginDirectories = []) {
-  return `format_version = 1\ntitle = ${tomlString(title)}\nquick_export_scope = ${tomlString(quickExportScope)}\nplugin_dirs = [${pluginDirectories.map(tomlString).join(", ")}]\nplugins = [${plugins.map(tomlString).join(", ")}]\nnotebooks = [${notebooks.map(tomlString).join(", ")}]\n`;
+function projectToml(title, notebooks, quickExportScope = "project", plugins = [], pluginDirectories = [], settings = {}) {
+  return `format_version = 1\ntitle = ${tomlString(title)}\nquick_export_scope = ${tomlString(quickExportScope)}\nplugin_dirs = [${pluginDirectories.map(tomlString).join(", ")}]\nplugins = [${plugins.map(tomlString).join(", ")}]\nnotebooks = [${notebooks.map(tomlString).join(", ")}]\n` + serializePublicationProfiles(settings);
 }
 
-function notebookToml(title, notes, plugins = [], pluginDirectories = []) {
-  return `format_version = 1\ntitle = ${tomlString(title)}\nplugin_dirs = [${pluginDirectories.map(tomlString).join(", ")}]\nplugins = [${plugins.map(tomlString).join(", ")}]\nnotes = [${notes.map(tomlString).join(", ")}]\n`;
+function notebookToml(title, notes, plugins = [], pluginDirectories = [], settings = {}) {
+  return `format_version = 1\ntitle = ${tomlString(title)}\nplugin_dirs = [${pluginDirectories.map(tomlString).join(", ")}]\nplugins = [${plugins.map(tomlString).join(", ")}]\nnotes = [${notes.map(tomlString).join(", ")}]\n` + serializePublicationProfiles(settings);
 }
 
 function readTomlString(source, key) {
+  source = source.split(/^\s*\[/m)[0];
   const match = source.match(new RegExp(`^\\s*${key}\\s*=\\s*("(?:\\\\.|[^\"])*")\\s*$`, "m"));
   if (!match) return null;
   return JSON.parse(match[1]);
 }
 
 function readTomlStringArray(source, key) {
+  source = source.split(/^\s*\[/m)[0];
   const match = source.match(new RegExp(`^\\s*${key}\\s*=\\s*(\\[[^\\n]*\\])\\s*$`, "m"));
   if (!match) return null;
   const value = JSON.parse(match[1]);
@@ -109,6 +112,7 @@ function parseProject(source) {
   }
   return {
     title: readTomlString(source, "title") || "Untitled Project",
+    ...parsePublicationProfiles(source),
     notebooks,
     quickExportScope,
     plugins: readTomlStringArray(source, "plugins") || [],
@@ -121,6 +125,7 @@ function parseNotebook(source) {
   if (!notes) throw new Error("notebook.toml must contain a notes array");
   return {
     title: readTomlString(source, "title") || "Untitled Notebook",
+    ...parsePublicationProfiles(source),
     notes,
     plugins: readTomlStringArray(source, "plugins") || [],
     pluginDirectories: readTomlStringArray(source, "plugin_dirs") || [],
@@ -146,6 +151,37 @@ export class ProjectManager {
 
   get currentNotebook() {
     return this.notebooks.get(this.currentNotebookPath) || null;
+  }
+
+  exportProfiles(notebookPath = this.currentNotebookPath) {
+    return { ...this.project?.exportProfiles, ...this.notebooks.get(notebookPath)?.exportProfiles };
+  }
+
+  exportProfile(name = null, notebookPath = this.currentNotebookPath) {
+    const selected = name || this.notebooks.get(notebookPath)?.defaultExportProfile || this.project?.defaultExportProfile;
+    if (!selected) return null;
+    const profile = this.exportProfiles(notebookPath)[selected];
+    if (!profile) throw new Error(`Undefined export profile: ${selected}`);
+    return profile;
+  }
+
+  validateExportProfiles(project = this.project, notebooks = this.notebooks) {
+    if (project.defaultExportProfile && !project.exportProfiles?.[project.defaultExportProfile]) throw new Error(`Undefined project export profile: ${project.defaultExportProfile}`);
+    for (const notebook of notebooks.values()) {
+      const selected = notebook.defaultExportProfile;
+      if (selected && !notebook.exportProfiles?.[selected] && !project.exportProfiles?.[selected]) throw new Error(`Undefined notebook export profile: ${selected}`);
+    }
+  }
+
+  async setExportProfile(name, value, { scope = "project", makeDefault = false } = {}) {
+    if (!this.project) throw new Error("Open a project first");
+    if (!["project", "notebook"].includes(scope)) throw new Error("Export profiles belong to a project or notebook");
+    const target = scope === "project" ? this.project : this.currentNotebook;
+    const profile = createPublicationProfile(value, name);
+    const settings = { ...target, exportProfiles: { ...target.exportProfiles, [name]: profile }, defaultExportProfile: makeDefault ? name : target.defaultExportProfile };
+    await this.saveManifest(target.path, scope === "project"
+      ? projectToml(settings.title, settings.notebooks, settings.quickExportScope, settings.plugins, settings.pluginDirectories, settings)
+      : notebookToml(settings.title, settings.notes, settings.plugins, settings.pluginDirectories, settings));
   }
 
   close() {
@@ -180,6 +216,7 @@ export class ProjectManager {
       const path = joinPath(directory, relativePath);
       this.notebooks.set(path, { path, relativePath, ...parseNotebook(await this.store.readText(path)) });
     }
+    this.validateExportProfiles();
     if (this.notebooks.size === 0) throw new Error("Project contains no notebooks");
     if (lastNotePath) {
       const notebook = [...this.notebooks.values()].find((candidate) => (
@@ -247,6 +284,7 @@ export class ProjectManager {
           ...parseNotebook(await this.store.readText(notebookPath)),
         });
       }
+      this.validateExportProfiles({ ...this.project, ...parsed }, notebooks);
       await this.store.writeText(path, source);
       this.project = { ...this.project, ...parsed };
       this.notebooks = notebooks;
@@ -255,6 +293,8 @@ export class ProjectManager {
     const current = this.notebooks.get(path);
     if (!current) throw new Error("Notebook manifest does not belong to this project");
     const parsed = parseNotebook(source);
+    const next = new Map(this.notebooks); next.set(path, { ...current, ...parsed });
+    this.validateExportProfiles(this.project, next);
     await this.store.writeText(path, source);
     this.notebooks.set(path, { ...current, ...parsed });
   }
@@ -282,7 +322,7 @@ export class ProjectManager {
     await this.store.writeText(path, notebookToml(title, ["index.md"]));
     await this.store.writeText(joinPath(dirname(path), "index.md"), `# ${title}\n`);
     this.project.notebooks.push(relativePath);
-    await this.store.writeText(this.project.path, projectToml(this.project.title, this.project.notebooks, this.project.quickExportScope, this.project.plugins, this.project.pluginDirectories));
+    await this.store.writeText(this.project.path, projectToml(this.project.title, this.project.notebooks, this.project.quickExportScope, this.project.plugins, this.project.pluginDirectories, this.project));
     this.notebooks.set(path, { path, relativePath, title, notes: ["index.md"], plugins: [], pluginDirectories: [] });
     return this.selectNotebook(path);
   }
@@ -295,7 +335,7 @@ export class ProjectManager {
     if (await this.store.exists(path)) throw new Error(`A note already exists at ${path}`);
     await this.store.writeText(path, `# ${title}\n`);
     notebook.notes.push(filename);
-    await this.store.writeText(notebook.path, notebookToml(notebook.title, notebook.notes, notebook.plugins, notebook.pluginDirectories));
+    await this.store.writeText(notebook.path, notebookToml(notebook.title, notebook.notes, notebook.plugins, notebook.pluginDirectories, notebook));
     return this.selectNote(path);
   }
 
@@ -308,7 +348,7 @@ export class ProjectManager {
     if (newPath !== path && await this.store.exists(newPath)) throw new Error(`A note already exists at ${newPath}`);
     if (newPath !== path) await this.store.rename(path, newPath);
     notebook.notes = notebook.notes.map((note) => note === oldName ? newName : note);
-    await this.store.writeText(notebook.path, notebookToml(notebook.title, notebook.notes, notebook.plugins, notebook.pluginDirectories));
+    await this.store.writeText(notebook.path, notebookToml(notebook.title, notebook.notes, notebook.plugins, notebook.pluginDirectories, notebook));
     if (this.currentNotePath === path) this.currentNotePath = newPath;
     return this.selectNote(newPath);
   }
@@ -317,7 +357,7 @@ export class ProjectManager {
     const notebook = this.notebooks.get(path);
     if (!notebook) throw new Error("Notebook does not belong to this project");
     notebook.title = title;
-    await this.store.writeText(notebook.path, notebookToml(notebook.title, notebook.notes, notebook.plugins, notebook.pluginDirectories));
+    await this.store.writeText(notebook.path, notebookToml(notebook.title, notebook.notes, notebook.plugins, notebook.pluginDirectories, notebook));
     return this.selectNotebook(path);
   }
 
@@ -327,7 +367,7 @@ export class ProjectManager {
     this.project.quickExportScope = scope;
     await this.store.writeText(
       this.project.path,
-      projectToml(this.project.title, this.project.notebooks, this.project.quickExportScope, this.project.plugins, this.project.pluginDirectories),
+      projectToml(this.project.title, this.project.notebooks, this.project.quickExportScope, this.project.plugins, this.project.pluginDirectories, this.project),
     );
   }
 
@@ -343,7 +383,7 @@ export class ProjectManager {
     const filename = path.split("/").at(-1);
     const remainingNotes = notebook.notes.filter((note) => note !== filename);
     notebook.notes = remainingNotes;
-    await this.store.writeText(notebook.path, notebookToml(notebook.title, remainingNotes, notebook.plugins, notebook.pluginDirectories));
+    await this.store.writeText(notebook.path, notebookToml(notebook.title, remainingNotes, notebook.plugins, notebook.pluginDirectories, notebook));
     if (this.currentNotePath === path) {
       return this.selectNote(joinPath(dirname(notebook.path), remainingNotes[0]));
     }

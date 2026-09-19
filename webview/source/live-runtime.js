@@ -1,3 +1,4 @@
+import { relocateLivePublicationAssets } from "../../../rix/src/runtime/live-publication.js";
 import { Integer, Rational, RationalInterval } from "@ratmath/core";
 import renderMathInElement from "katex/contrib/auto-render";
 import outputWidgetStyles from "../../../rix/styles/output-widgets.css?inline";
@@ -235,6 +236,7 @@ if (payloadElement || sourceCellElements.length) {
   }
 
   function run() {
+    for (const initial of document.querySelectorAll("[data-rix-initial-cell]")) initial.hidden = false;
     for (const dispose of widgetDisposers.splice(0)) dispose();
     for (const observed of observedResults.splice(0)) observed.dispose?.();
     const cells = payload ? extractCells(payload.source) : extractSourceCells(sourceCellElements);
@@ -255,6 +257,7 @@ if (payloadElement || sourceCellElements.length) {
       : widget.dataset.rixShowCode === "true";
     const code = showCode ? `<details class="rix-live-source"><summary>RiX code</summary><pre><code>${escapeLiveHtml(cell.code)}</code></pre></details>` : "";
     const result = execution.liveResult;
+    if (result && !result.error) { const initial = document.querySelector(`[data-rix-initial-cell="${cell.index}"]`); if (initial) initial.hidden = true; }
     let output = "";
     if (cell.metadata.showOutput && result) {
       output = result.error
@@ -273,10 +276,11 @@ if (payloadElement || sourceCellElements.length) {
     });
     normalizeLiveTables(widget);
     if (result?.value) {
-      widgetDisposers.push(mountOutputWidgets(widget, result.value, {
+      widgetDisposers.push(mountOutputWidgets(widget, relocateLivePublicationAssets(result.value, payload?.assetPaths || {}), {
+        incrementalSvg: true,
         format: formatValue,
         render: renderLiveValue,
-        observe: result.observed?.observe || null,
+        observe: result.observed?.observe ? listener => result.observed.observe((value, event) => listener(relocateLivePublicationAssets(value, payload?.assetPaths || {}), event)) : null,
         evaluateEdit: (source, { mode }) => parseAndEvaluate(mode === "formula" ? `@{ ${source} }` : source, {
           context: runtime.context,
           registry: runtime.registry,
@@ -298,6 +302,7 @@ if (payloadElement || sourceCellElements.length) {
   }
 
   function renderLiveValue(value) {
+    value = relocateLivePublicationAssets(value, payload?.assetPaths || {});
     if (!isOutputValue(value)) return `<pre>${escapeLiveHtml(formatValue(value))}</pre>`;
     if (value.kind === "grid") return `<div class="rix-live-math-grid">${gridLatex(value, formatValue)}</div>`;
     if (value.kind === "fragment") return value.children.map(renderLiveValue).join("");

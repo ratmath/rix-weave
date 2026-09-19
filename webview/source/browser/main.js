@@ -1,3 +1,4 @@
+import { buildNotebookPublication } from "../notebook-web/publication-workflow.js";
 import { bundleNotebookRun, createNotebookAssetStore } from "../notebook-web/output-assets.js";
 import { renderStaticDocument } from "../notebook-web/rix-engine.js";
 import docshellManifest from "../../../docshell.manifest.json" with { type: "json" };
@@ -283,7 +284,12 @@ function exportNotePaths(scope, notebookPath) {
 function staticHtml(titleText, source) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${titleText.replaceAll("&", "&amp;").replaceAll("<", "&lt;")}</title><style>body{max-width:52rem;margin:3rem auto;padding:0 1.5rem;color:#252827;font:17px/1.55 Georgia,serif}pre,code{font-family:ui-monospace,monospace}pre{padding:1rem;overflow:auto;background:#f1efe9}img{max-width:100%;height:auto}table{border-collapse:collapse}td,th{padding:.35rem .6rem;border:1px solid #d9d6ce}</style></head><body>${htmlRenderer.render(source)}</body></html>`;
 }
-async function buildStaticExport({ scope, notebookPath, targets }) {
+async function buildStaticExport({ scope, notebookPath, targets, profileName = null }) {
+  if (profileName) {
+    const result = await buildNotebookPublication({ notes: exportNotePaths(scope, notebookPath).filter(Boolean), store, engine, root: exportRoot(), title: projectManager?.project.title || archiveLabel(), profile: projectManager.exportProfile(profileName, notebookPath), profileName, renderHtml: staticHtml });
+    if (!result.ok) throw new Error(result.manifest.diagnostics.map(item => item.message).join("; "));
+    return new BrowserDocumentStore([...result.files]);
+  }
   const output = new BrowserDocumentStore(); const notes = exportNotePaths(scope, notebookPath).filter(Boolean);
   if (!notes.length) throw new Error("Choose a Markdown note to export");
   const roots = { markdown: "/markdown", html: "/html", quarto: "/quarto" };
@@ -308,24 +314,36 @@ async function buildStaticExport({ scope, notebookPath, targets }) {
   if (targets.quarto) output.set("/quarto/_quarto.yml", `project:\n  type: website\nwebsite:\n  title: ${JSON.stringify(projectManager?.project.title || archiveLabel())}\nformat:\n  html:\n    toc: true\n`);
   return output;
 }
+const exportProfile = $("#browser-export-profile");
 const exportDialog = $("#export-dialog"); const exportScope = $("#browser-export-scope"); const exportNotebook = $("#browser-export-notebook"); const exportNotebookLabel = $("#browser-export-notebook-label");
 const exportChecks = { markdown: $("#browser-export-markdown"), html: $("#browser-export-html"), quarto: $("#browser-export-quarto") };
+function updateProfileTargets() { for (const input of Object.values(exportChecks)) input.disabled = Boolean(exportProfile.value); }
 function updateBrowserExportScope() { const notebookScope = workspaceKind === "project" && exportScope.value === "notebook"; exportNotebook.hidden = !notebookScope; exportNotebookLabel.hidden = !notebookScope; }
 function openBrowserExportDialog() {
   exportNotebook.replaceChildren(); const project = workspaceKind === "project";
   exportScope.disabled = !project; exportScope.value = "note";
   for (const notebook of projectManager?.notebookList || []) { const option = document.createElement("option"); option.value = notebook.path; option.textContent = notebook.title; option.selected = notebook.path === projectManager.currentNotebookPath; exportNotebook.append(option); }
+  exportProfile.replaceChildren(new Option("Custom targets", ""));
+  for (const name of Object.keys(projectManager?.exportProfiles() || {}).sort()) exportProfile.add(new Option(name, name));
+  exportProfile.value = projectManager?.exportProfile()?.name || "";
   for (const input of Object.values(exportChecks)) input.checked = true;
-  updateBrowserExportScope(); exportDialog.showModal();
+  updateBrowserExportScope(); updateProfileTargets(); exportDialog.showModal();
 }
 $("#export-notebook").addEventListener("click", openBrowserExportDialog); exportScope.addEventListener("change", updateBrowserExportScope);
+exportProfile.addEventListener("change", updateProfileTargets);
+exportNotebook.addEventListener("change", () => {
+  exportProfile.replaceChildren(new Option("Custom targets", ""));
+  for (const name of Object.keys(projectManager?.exportProfiles(exportNotebook.value) || {}).sort()) exportProfile.add(new Option(name, name));
+  exportProfile.value = projectManager?.exportProfile(null, exportNotebook.value)?.name || "";
+  updateProfileTargets();
+});
 exportDialog.querySelector("button[value=cancel]").addEventListener("click", () => exportDialog.close("cancel"));
 exportDialog.addEventListener("close", async () => {
   if (exportDialog.returnValue !== "confirm") return;
   try {
     const targets = Object.fromEntries(Object.entries(exportChecks).map(([name, input]) => [name, input.checked]));
-    if (!Object.values(targets).some(Boolean)) throw new Error("Select at least one output format");
-    const output = await buildStaticExport({ scope: exportScope.value, notebookPath: exportNotebook.value, targets }); const entries = output.entries();
+    if (!exportProfile.value && !Object.values(targets).some(Boolean)) throw new Error("Select at least one output format");
+    const output = await buildStaticExport({ scope: exportScope.value, notebookPath: exportNotebook.value, targets, profileName: exportProfile.value || null }); const entries = output.entries();
     if (workspaceKind === "single" && targets.markdown && Object.values(targets).filter(Boolean).length === 1 && entries.length === 1) {
       const [path, source] = entries[0]; const name = `${filename.replace(/\.(?:md|markdown)$/i, "") || "rix-notebook"}-rendered.md`; downloadBlob(new Blob([source], { type: "text/markdown;charset=utf-8" }), name); elements.status.textContent = `Downloaded ${name}; Safari cannot choose a download location.`; return;
     }

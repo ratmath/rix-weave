@@ -1,3 +1,4 @@
+import { buildNotebookPublication, replaceNotebookPublication } from "./notebook-web/publication-workflow.js";
 import { quartoProjectYaml as sharedQuartoProjectYaml } from "../../../rix/src/runtime/publication-plan.js";
 import { bundleNotebookRun, createNotebookAssetStore, createBoundedBinaryStore } from "./notebook-web/output-assets.js";
 import { EditorState, Transaction } from "@codemirror/state";
@@ -14,7 +15,7 @@ import "../../../rix/styles/output-widgets.css";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { copyFile, exists, mkdir, readDir, open as openAssetFile, readTextFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { copyFile, exists, mkdir, rename, remove, readDir, open as openAssetFile, readTextFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { Integer } from "@ratmath/core";
 import {
   createDefaultSystemContext,
@@ -113,6 +114,8 @@ const helpContent = document.querySelector("#help-content");
 const helpExternalLink = document.querySelector("#help-external-link");
 const fileContextMenu = document.querySelector("#file-context-menu");
 const exportDialog = document.querySelector("#export-dialog");
+const exportProfileSelect = document.querySelector("#export-profile");
+const updateProfileTargets = () => { for (const input of [exportMarkdown, exportHtml, exportQuarto]) input.disabled = Boolean(exportProfileSelect.value); };
 const exportScopeSelect = document.querySelector("#export-scope");
 const exportNotebookLabel = document.querySelector("#export-notebook-label");
 const exportNotebookSelect = document.querySelector("#export-notebook-select");
@@ -1060,8 +1063,8 @@ function liveWidgetMarkup(index, showCode = null) {
   return `<div class="rix-live-widget" data-rix-live-cell="${index}"${codeAttribute}></div>`;
 }
 
-function liveDocumentMarkup(source, runtimePath) {
-  const payload = JSON.stringify({ source }).replaceAll("<", "\\u003c");
+function liveDocumentMarkup(source, runtimePath, options = {}) {
+  const payload = JSON.stringify({ source, ...options }).replaceAll("<", "\\u003c");
   return `<section id="rix-live-controls" class="rix-live-controls" hidden></section><script id="rix-live-document" type="application/json">${payload}</script><script type="module" src="${escapeHtml(runtimePath)}"></script>`;
 }
 
@@ -1077,7 +1080,7 @@ function liveRuntimePathForPage(relativePagePath) {
   return relativePathBetween(relativePagePath, "assets/rix-live/rix-live.js");
 }
 
-function staticHtmlDocument(title, staticSource, katexStylesheetPath, liveSource = null, liveRuntimePath = null) {
+function staticHtmlDocument(title, staticSource, katexStylesheetPath, liveSource = null, liveRuntimePath = null, liveOptions = {}) {
   const holder = document.createElement("article");
   holder.innerHTML = exportMarkdownRenderer.render(staticSource);
   if (liveSource) holder.innerHTML = injectLiveWidgets(holder.innerHTML);
@@ -1090,7 +1093,7 @@ function staticHtmlDocument(title, staticSource, katexStylesheetPath, liveSource
     ],
     throwOnError: false,
   });
-  const liveMarkup = liveSource && liveRuntimePath ? liveDocumentMarkup(liveSource, liveRuntimePath) : "";
+  const liveMarkup = liveSource && liveRuntimePath ? liveDocumentMarkup(liveSource, liveRuntimePath, liveOptions) : "";
   return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>${escapeHtml(title)}</title><link rel="stylesheet" href="${escapeHtml(katexStylesheetPath)}" /><style>body{max-width:52rem;margin:3rem auto;padding:0 1.25rem;color:#202124;font-family:system-ui,sans-serif;line-height:1.55}pre{overflow:auto;padding:1rem;background:#f4f2ec;border-radius:6px}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}img{max-width:100%;height:auto}table{border-collapse:collapse;margin:1rem 0}th,td{padding:.35rem .55rem;border:1px solid #cfd8e5;text-align:left}th{background:#edf3fa}figcaption{color:#657080}blockquote{margin-left:0;padding-left:1rem;border-left:3px solid #9bb8dc;color:#4d5867}</style></head><body>${liveMarkup}${holder.innerHTML}</body></html>\n`;
 }
 
@@ -1205,8 +1208,9 @@ function quartoProjectYaml(title, pages) {
   return sharedQuartoProjectYaml(title, pages);
 }
 
-async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, includeQuarto, quick = false }) {
-  if (!includeMarkdown && !includeHtml && !includeQuarto) throw new Error("Choose at least one export output");
+async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, includeQuarto, quick = false, profileName = null }) {
+  const namedProfile = profileName ? projects.exportProfile(profileName, notebookPath) : null;
+  if (!namedProfile && !includeMarkdown && !includeHtml && !includeQuarto) throw new Error("Choose at least one export output");
   if (dirty) await saveNote();
   const destination = await openDialog({
     title: quick ? "Choose a folder for quick export" : "Choose an export destination folder",
@@ -1223,7 +1227,27 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
     : scope === "note"
       ? projects.currentNotePath.split("/").at(-1).replace(/\.md$/, "")
       : projects.notebooks.get(notebookPath)?.title || "notebook";
-  const exportRoot = pathJoin(destination, `${pathSlug(scopeName)}-export`);
+  const exportRoot = pathJoin(destination, `${pathSlug(scopeName)}${namedProfile ? `-${profileName}` : ""}-export`);
+  if (namedProfile) {
+    const assets = new Map();
+    const addLocalAsset = async (name, url) => { const response = await fetch(url); if (!response.ok) throw new Error(`Missing local publication asset: ${name}`); const data = new Uint8Array(await response.arrayBuffer()); assets.set(name, data); return new TextDecoder().decode(data); };
+    if (namedProfile.targets.includes("html")) {
+      const stylesheet = await addLocalAsset("assets/katex/katex.min.css", new URL("katex.min.css", KATEX_PUBLIC_ROOT));
+      for (const fontName of new Set([...stylesheet.matchAll(/url\(fonts\/([^)]*\.woff2)\)/g)].map(match => match[1]))) await addLocalAsset(`assets/katex/fonts/${fontName}`, new URL(`fonts/${fontName}`, KATEX_PUBLIC_ROOT));
+      if (namedProfile.live) await addLocalAsset("assets/rix-live.js", new URL("rix-live.js", LIVE_RUNTIME_PUBLIC_ROOT));
+    }
+    const result = await buildNotebookPublication({ notes, root: projects.project.directory, title: scopeName,
+      store: { readText: readTextFile, ...createBoundedBinaryStore(openAssetFile) }, engine: rixEngine,
+      profile: namedProfile, profileName, extraAssets: assets,
+      renderHtml: (title, markdown) => staticHtmlDocument(title, markdown, "assets/katex/katex.min.css"),
+      renderLiveHtml: (title, markdown, source, options) => staticHtmlDocument(title, markdown, "assets/katex/katex.min.css", source, "assets/rix-live.js", options),
+    });
+    await replaceNotebookPublication({ exists, readText: readTextFile, mkdir, rename, remove, writeFile }, exportRoot, result);
+    setStatus(`Exported ${result.manifest.documents.length} builds using ${profileName}`);
+    messageDialogTitle.textContent = "Export complete";
+    messageDialogBody.textContent = `Wrote ${profileName} to ${exportRoot}. ${result.manifest.diagnostics.length} diagnostics are recorded in manifest.json.`;
+    messageDialog.showModal(); return;
+  }
   await mkdir(exportRoot, { recursive: true });
   const outputRoots = {
     markdown: includeMarkdown ? pathJoin(exportRoot, "markdown") : null,
@@ -1357,6 +1381,10 @@ function openExportDialog() {
     option.selected = notebook.path === projects.currentNotebookPath;
     exportNotebookSelect.append(option);
   }
+  exportProfileSelect.replaceChildren(new Option("Custom targets", ""));
+  for (const name of Object.keys(projects.exportProfiles()).sort()) exportProfileSelect.add(new Option(name, name));
+  exportProfileSelect.value = projects.exportProfile()?.name || "";
+  updateProfileTargets();
   exportScopeSelect.value = "note";
   exportMarkdown.checked = true;
   exportHtml.checked = true;
@@ -1382,6 +1410,7 @@ function quickExport() {
     includeHtml: true,
     includeQuarto: true,
     quick: true,
+    profileName: projects.exportProfile()?.name || null,
   }));
 }
 
@@ -2107,7 +2136,14 @@ newNoteButton.addEventListener("click", () => runProjectAction(async () => {
   const note = await projects.createNote(title);
   await loadNote(note);
 }));
+exportProfileSelect.addEventListener("change", updateProfileTargets);
 exportScopeSelect.addEventListener("change", updateExportNotebookChoice);
+exportNotebookSelect.addEventListener("change", () => {
+  exportProfileSelect.replaceChildren(new Option("Custom targets", ""));
+  for (const name of Object.keys(projects.exportProfiles(exportNotebookSelect.value)).sort()) exportProfileSelect.add(new Option(name, name));
+  exportProfileSelect.value = projects.exportProfile(null, exportNotebookSelect.value)?.name || "";
+  updateProfileTargets();
+});
 exportDialog.querySelector("button[value=cancel]").addEventListener("click", () => exportDialog.close("cancel"));
 exportDialog.addEventListener("close", () => {
   if (exportDialog.returnValue !== "confirm") return;
@@ -2123,6 +2159,7 @@ exportDialog.addEventListener("close", () => {
       includeMarkdown: exportMarkdown.checked,
       includeHtml: exportHtml.checked,
       includeQuarto: exportQuarto.checked,
+      profileName: exportProfileSelect.value || null,
     });
   });
 });
