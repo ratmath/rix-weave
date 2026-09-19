@@ -1,4 +1,4 @@
-import { bundleNotebookRun, createNotebookAssetStore } from "./notebook-web/output-assets.js";
+import { bundleNotebookRun, createNotebookAssetStore, createBoundedBinaryStore } from "./notebook-web/output-assets.js";
 import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView, hoverTooltip } from "@codemirror/view";
 import { autocompletion } from "@codemirror/autocomplete";
@@ -13,7 +13,7 @@ import "../../../rix/styles/output-widgets.css";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { copyFile, exists, mkdir, readDir, readFile, readTextFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { copyFile, exists, mkdir, readDir, open as openAssetFile, readTextFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { Integer } from "@ratmath/core";
 import {
   createDefaultSystemContext,
@@ -1244,7 +1244,7 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
     const staticDocumentRun = await bundleNotebookRun(executeDocument(source, {
       mode: "static",
       sliderOverrides: new Map(),
-    }), { store: createNotebookAssetStore({ readBinary: readFile }, { directory: pathDirectory(notePath) }) });
+    }), { store: createNotebookAssetStore(createBoundedBinaryStore(openAssetFile), { directory: pathDirectory(notePath) }) });
     const liveDocumentRun = executeDocument(source, { mode: "live", sliderOverrides: new Map() });
     const relativePath = pathRelative(projects.project.directory, notePath);
     const liveCellIndexes = new Set(liveDocumentRun.runs.flatMap((run, index) => (
@@ -1401,7 +1401,7 @@ async function exportOpenDocument() {
   await copyKatexAssets(outputRoots.html);
   await copyKatexAssets(outputRoots.quarto);
   const source = editor.state.doc.toString();
-  const documentRun = await bundleNotebookRun(executeDocument(source, { mode: "static", sliderOverrides: new Map() }), { store: createNotebookAssetStore({ readBinary: readFile }, { directory: pathDirectory(notePath) }) });
+  const documentRun = await bundleNotebookRun(executeDocument(source, { mode: "static", sliderOverrides: new Map() }), { store: createNotebookAssetStore(createBoundedBinaryStore(openAssetFile), { directory: pathDirectory(notePath) }) });
   const staticSources = new Map();
   for (const [target, root] of Object.entries(outputRoots)) {
     await materializeOutputAssets(documentRun, `${name}.md`, root);

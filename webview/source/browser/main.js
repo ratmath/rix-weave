@@ -294,7 +294,7 @@ async function buildStaticExport({ scope, notebookPath, targets }) {
     for (const [target, root] of Object.entries(roots)) if (targets[target]) {
       const parent = dirname(joinPath(root, relative));
       for (const [path, bytes] of run.outputBundle.files) output.set(joinPath(parent, path), bytes);
-      output.set(joinPath(parent, `${basename(notePath)}.rix-output.json`), run.outputBundleJSON);
+      if (run.outputBundle.document.children.length) output.set(joinPath(parent, `${basename(notePath)}.rix-output.json`), run.outputBundleJSON);
     }
     if (targets.markdown) output.set(joinPath(roots.markdown, relative), staticSource);
     if (targets.html) output.set(joinPath(roots.html, relative.replace(/\.(?:md|markdown)$/i, ".html")), staticHtml(basename(notePath), staticSource));
@@ -303,7 +303,7 @@ async function buildStaticExport({ scope, notebookPath, targets }) {
   for (const [path, value] of store.entries()) {
     if (isMarkdown(path)) continue;
     const relative = relativeExportPath(path);
-    for (const [target, root] of Object.entries(roots)) if (targets[target]) output.set(joinPath(root, relative), value);
+    for (const [target, root] of Object.entries(roots)) if (targets[target] && !await output.exists(joinPath(root, relative))) output.set(joinPath(root, relative), value);
   }
   if (targets.quarto) output.set("/quarto/_quarto.yml", `project:\n  type: website\nwebsite:\n  title: ${JSON.stringify(projectManager?.project.title || archiveLabel())}\nformat:\n  html:\n    toc: true\n`);
   return output;

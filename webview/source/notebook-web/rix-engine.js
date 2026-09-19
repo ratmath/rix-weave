@@ -254,8 +254,8 @@ export function staticOutputMarkdown(value, { graphicReference = null, figureAlt
   if (!isOutputValue(value)) return formatValue(value);
   if (["image", "audio", "video", "asset"].includes(value.kind)) return renderMarkdown(value, { format: formatValue }).content;
   if (value.kind === "text") return formatValue(value.value);
-  if (value.kind === "paragraph") return value.children.map(formatValue).join("");
-  if (value.kind === "heading") return `${"#".repeat(value.level)} ${formatValue(value.content)}`;
+  if (value.kind === "paragraph") return renderMarkdown(value, { format: formatValue }).content.trimEnd();
+  if (value.kind === "heading") return renderMarkdown(value, { format: formatValue }).content.trimEnd();
   if (value.kind === "fragment") return value.children.map((child) => staticOutputMarkdown(child, { graphicReference })).join("\n\n");
   if (value.kind === "table") { const headings = value.columns.map((column) => escapeMarkdownCell(column.label)); const rows = value.rows.map((row) => `| ${row.map((cell) => escapeMarkdownCell(formatValue(cell))).join(" | ")} |`); return [[`| ${headings.join(" | ")} |`, `| ${headings.map(() => "---").join(" | ")} |`, ...rows].join("\n"), value.caption ? `*${value.caption}*` : ""].filter(Boolean).join("\n\n"); }
   if (value.kind === "grid") return gridLatex(value, formatValue);
@@ -268,7 +268,7 @@ export function staticOutputMarkdown(value, { graphicReference = null, figureAlt
   if (value.kind === "figure") return [staticOutputMarkdown(value.content, { graphicReference, figureAlt: value.alt || value.caption || figureAlt }), value.caption ? `*${value.caption}*` : ""].filter(Boolean).join("\n\n");
   if (value.kind === "slide") return ["---", value.title ? `## ${value.title}` : "", staticOutputMarkdown(value.content, { graphicReference }), value.notes ? `<!-- Speaker notes: ${value.notes} -->` : ""].filter(Boolean).join("\n\n");
   if (value.kind === "slides") return value.slides.map((slide) => staticOutputMarkdown(slide, { graphicReference })).join("\n\n");
-  return formatValue(value);
+  return renderMarkdown(value, { format: formatValue, graphic: (graphic) => staticOutputMarkdown(graphic, { graphicReference }) }).content.trimEnd();
 }
 function staticCellReplacement(run, graphicReference) { if (run?.metadata.role === "set" || !run?.staticOutput) return ""; if (run.staticOutput.kind === "error") return `> **RiX export error:** ${run.staticOutput.content}`; return staticOutputMarkdown(run.staticOutput.value, { graphicReference }); }
 export function renderStaticDocument(document, runs, inlineRuns, options = {}) {

@@ -346,3 +346,19 @@ notebook module resolver rather than Node APIs.
 The next project-management slice adds Tauri's dialog and filesystem plugins.
 These are used only after a user selects a project folder; the application does
 not receive a blanket home-directory filesystem scope.
+
+## Portable media in publication exports
+
+Native and browser publication exports resolve structured `Asset`/`Image`/
+`Audio`/`Video` values through the shared bounded RiX asset resolver. Files come
+from the already selected note directory or uploaded project; no broader path
+grant is requested. Exports copy hash-named assets beside each note and write
+a `<note>.rix-output.json` sidecar for structured publications. Missing assets
+remain readable placeholders with source-path diagnostics; HTTP(S) media stays
+a link unless an embedding host explicitly authorizes fetching it. Captions and
+transcripts survive static Markdown, HTML, and Quarto exports.
+
+The engine also exposes `exportOutputBundle(value)`/`importOutputBundle(json)`
+for host integrations. Imports validate the saved bytes without reopening any
+original path or rerunning source. See
+`../rix/documentation/eval/output-assets.md` for limits and the versioned format.
