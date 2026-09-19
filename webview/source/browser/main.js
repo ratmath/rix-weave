@@ -1,3 +1,5 @@
+import { bundleNotebookRun, createNotebookAssetStore } from "../notebook-web/output-assets.js";
+import { renderStaticDocument } from "../notebook-web/rix-engine.js";
 import docshellManifest from "../../../docshell.manifest.json" with { type: "json" };
 import { createFilePolicy } from "../../../docshell/src/file-policy.js";
 import { BrowserDocumentStore, createSingleFileStore } from "../../../docshell/src/browser/browser-document-store.js";
@@ -286,7 +288,14 @@ async function buildStaticExport({ scope, notebookPath, targets }) {
   if (!notes.length) throw new Error("Choose a Markdown note to export");
   const roots = { markdown: "/markdown", html: "/html", quarto: "/quarto" };
   for (const notePath of notes) {
-    const relative = relativeExportPath(notePath); const staticSource = engine.executeDocument(await store.readText(notePath), { mode: "static", sliderOverrides: new Map() }).staticRenderedSource;
+    const relative = relativeExportPath(notePath);
+    const run = await bundleNotebookRun(engine.executeDocument(await store.readText(notePath), { mode: "static", sliderOverrides: new Map() }), { store: createNotebookAssetStore(store, { directory: dirname(notePath) }) });
+    const staticSource = renderStaticDocument(run.document, run.runs, run.inlineRuns);
+    for (const [target, root] of Object.entries(roots)) if (targets[target]) {
+      const parent = dirname(joinPath(root, relative));
+      for (const [path, bytes] of run.outputBundle.files) output.set(joinPath(parent, path), bytes);
+      output.set(joinPath(parent, `${basename(notePath)}.rix-output.json`), run.outputBundleJSON);
+    }
     if (targets.markdown) output.set(joinPath(roots.markdown, relative), staticSource);
     if (targets.html) output.set(joinPath(roots.html, relative.replace(/\.(?:md|markdown)$/i, ".html")), staticHtml(basename(notePath), staticSource));
     if (targets.quarto) output.set(joinPath(roots.quarto, relative.replace(/\.(?:md|markdown)$/i, ".qmd")), staticSource);
@@ -317,7 +326,7 @@ exportDialog.addEventListener("close", async () => {
     const targets = Object.fromEntries(Object.entries(exportChecks).map(([name, input]) => [name, input.checked]));
     if (!Object.values(targets).some(Boolean)) throw new Error("Select at least one output format");
     const output = await buildStaticExport({ scope: exportScope.value, notebookPath: exportNotebook.value, targets }); const entries = output.entries();
-    if (workspaceKind === "single" && targets.markdown && Object.values(targets).filter(Boolean).length === 1) {
+    if (workspaceKind === "single" && targets.markdown && Object.values(targets).filter(Boolean).length === 1 && entries.length === 1) {
       const [path, source] = entries[0]; const name = `${filename.replace(/\.(?:md|markdown)$/i, "") || "rix-notebook"}-rendered.md`; downloadBlob(new Blob([source], { type: "text/markdown;charset=utf-8" }), name); elements.status.textContent = `Downloaded ${name}; Safari cannot choose a download location.`; return;
     }
     const name = archiveName("-export"); const blob = new Blob([createZipProject(output)], { type: "application/zip" }); if (await saveBlobWithPicker(blob, name, "RiX Notebook export")) return;

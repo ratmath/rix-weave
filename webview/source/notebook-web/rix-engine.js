@@ -1,3 +1,5 @@
+import { createOutputBundleHost } from "../../../../rix/src/runtime/output-bundle-host.js";
+import { renderMarkdown } from "../../../../rix/plugins/renderers/document-renderers.js";
 import { Integer, Rational, RationalInterval } from "@ratmath/core";
 import {
   Context,
@@ -250,6 +252,7 @@ function graphicTextMarkdown(value) {
 }
 export function staticOutputMarkdown(value, { graphicReference = null, figureAlt = null } = {}) {
   if (!isOutputValue(value)) return formatValue(value);
+  if (["image", "audio", "video", "asset"].includes(value.kind)) return renderMarkdown(value, { format: formatValue }).content;
   if (value.kind === "text") return formatValue(value.value);
   if (value.kind === "paragraph") return value.children.map(formatValue).join("");
   if (value.kind === "heading") return `${"#".repeat(value.level)} ${formatValue(value.content)}`;
@@ -275,6 +278,7 @@ export function renderStaticDocument(document, runs, inlineRuns, options = {}) {
 
 export function createRixNotebookEngine(configuration = {}) {
   const engine = {
+    ...createOutputBundleHost({ assetStore: configuration.assetStore, authorizeExternal: configuration.authorizeExternal, format: formatValue }),
     pluginCatalog: configuration.pluginCatalog,
     plugins: configuration.plugins || [],
     configure(next = {}) { if (next.pluginCatalog) this.pluginCatalog = next.pluginCatalog; if (next.plugins) this.plugins = next.plugins; return this; },

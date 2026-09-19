@@ -1,3 +1,4 @@
+import { bundleNotebookRun, createNotebookAssetStore } from "./notebook-web/output-assets.js";
 import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView, hoverTooltip } from "@codemirror/view";
 import { autocompletion } from "@codemirror/autocomplete";
@@ -12,7 +13,7 @@ import "../../../rix/styles/output-widgets.css";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { copyFile, exists, mkdir, readDir, readTextFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { copyFile, exists, mkdir, readDir, readFile, readTextFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { Integer } from "@ratmath/core";
 import {
   createDefaultSystemContext,
@@ -1164,6 +1165,17 @@ function staticDocumentHasSlides(documentRun) {
   });
 }
 
+async function materializeOutputAssets(run, relativeNotePath, exportRoot) {
+  const directory = pathDirectory(pathJoin(exportRoot, relativeNotePath));
+  for (const [relative, bytes] of run.outputBundle.files) {
+    const path = pathJoin(directory, relative);
+    await mkdir(pathDirectory(path), { recursive: true });
+    await writeFile(path, bytes);
+  }
+  await mkdir(directory, { recursive: true });
+  await writeTextFile(pathJoin(directory, `${relativeNotePath.split("/").at(-1)}.rix-output.json`), run.outputBundleJSON);
+}
+
 async function materializeStaticGraphics(documentRun, relativeNotePath, exportRoot) {
   const references = new Map();
   let index = 0;
@@ -1229,10 +1241,10 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
   const liveTargets = new Set();
   for (const notePath of notes) {
     const source = await readTextFile(notePath);
-    const staticDocumentRun = executeDocument(source, {
+    const staticDocumentRun = await bundleNotebookRun(executeDocument(source, {
       mode: "static",
       sliderOverrides: new Map(),
-    });
+    }), { store: createNotebookAssetStore({ readBinary: readFile }, { directory: pathDirectory(notePath) }) });
     const liveDocumentRun = executeDocument(source, { mode: "live", sliderOverrides: new Map() });
     const relativePath = pathRelative(projects.project.directory, notePath);
     const liveCellIndexes = new Set(liveDocumentRun.runs.flatMap((run, index) => (
@@ -1242,6 +1254,7 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
     const staticSources = new Map();
     for (const [target, root] of Object.entries(outputRoots)) {
       if (!root) continue;
+      await materializeOutputAssets(staticDocumentRun, relativePath, root);
       const graphicReferences = await materializeStaticGraphics(staticDocumentRun, relativePath, root);
       staticSources.set(target, renderStaticDocument(
         staticDocumentRun.document, staticDocumentRun.runs, staticDocumentRun.inlineRuns,
@@ -1388,9 +1401,10 @@ async function exportOpenDocument() {
   await copyKatexAssets(outputRoots.html);
   await copyKatexAssets(outputRoots.quarto);
   const source = editor.state.doc.toString();
-  const documentRun = executeDocument(source, { mode: "static", sliderOverrides: new Map() });
+  const documentRun = await bundleNotebookRun(executeDocument(source, { mode: "static", sliderOverrides: new Map() }), { store: createNotebookAssetStore({ readBinary: readFile }, { directory: pathDirectory(notePath) }) });
   const staticSources = new Map();
   for (const [target, root] of Object.entries(outputRoots)) {
+    await materializeOutputAssets(documentRun, `${name}.md`, root);
     const graphicReferences = await materializeStaticGraphics(documentRun, `${name}.md`, root);
     staticSources.set(target, renderStaticDocument(documentRun.document, documentRun.runs, documentRun.inlineRuns, {
       graphicReference: (graphic) => graphicReferences.get(graphic) || formatValue(graphic),
