@@ -211,3 +211,14 @@ test("implemented plugin tutorial cells execute unchanged in the notebook", asyn
     expect(run.outputStatements.map(({ kind }) => kind), id).not.toContain("error");
   }
 }, 180_000);
+
+test("notebook retains Shaped storage and explicit Matrix semantics", () => {
+  const run = engine().executeDocument(`\`\`\`rix
+grid := .Shaped.Generate({: 2, 2 }, idx -> idx[1] + idx[2]);
+matrix := grid ~!: :Matrix;
+[grid ? :Shaped, matrix.__type, (matrix * matrix)[1,1]];
+\`\`\``);
+  expect(run.outputStatements.at(-1)?.content).toBe("[1, Matrix, 13]");
+  expect(run.outputStatements.map(({ kind }) => kind)).not.toContain("error");
+  disposeNotebookRun(run);
+});

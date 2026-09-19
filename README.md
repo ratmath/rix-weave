@@ -70,6 +70,15 @@ shown with its source line, and selecting a result returns the editor to that
 line. Use the Preview button, `Cmd-P`, or `Cmd-Shift-P` to swap that pane for
 the rendered Markdown preview, which includes the current RiX statement results.
 
+### Shaped storage and Matrix values
+
+Notebook uses the same constructors and editor grammar as RiX CLI and Web.
+`[1,2;3,4]` and `{:2x2: 1,2;3,4}` are Shaped component storage; their arithmetic
+is entrywise. Select `{:2x2: /Matrix/ 1,2;3,4}` or `grid ~!: :Matrix` for matrix
+algebra. Printed Matrix values retain that header when reinserted. Mathematical
+Vector/Covector/Tensor headers require the linalg plugin and explicit Frames.
+See the [Shaped guide](../rix/documentation/eval/objects/shaped.md).
+
 ### Notebook controls
 
 RiX Notebook adds a notebook-host `.slider(...)` function; it is not a general
