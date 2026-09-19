@@ -1,3 +1,4 @@
+import { quartoProjectYaml as sharedQuartoProjectYaml } from "../../../rix/src/runtime/publication-plan.js";
 import { bundleNotebookRun, createNotebookAssetStore, createBoundedBinaryStore } from "./notebook-web/output-assets.js";
 import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView, hoverTooltip } from "@codemirror/view";
@@ -1201,8 +1202,7 @@ function quartoDocument(title, source, isSlideDeck, liveRuntimePath = null, kate
 }
 
 function quartoProjectYaml(title, pages) {
-  const nav = pages.map(({ path, title: pageTitle }) => `      - href: ${JSON.stringify(path)}\n        text: ${JSON.stringify(pageTitle)}`).join("\n");
-  return `project:\n  type: website\n  output-dir: _site\n\nwebsite:\n  title: ${JSON.stringify(title)}\n  navbar:\n    left:\n${nav || "      []"}\n\nformat:\n  html:\n    toc: true\n`;
+  return sharedQuartoProjectYaml(title, pages);
 }
 
 async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, includeQuarto, quick = false }) {
