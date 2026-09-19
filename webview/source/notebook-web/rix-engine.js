@@ -7,7 +7,9 @@ import {
   createDefaultSystemContext,
   createGraphicsTextPlan,
   evaluate,
+  evaluateAsync,
   evaluateObserved,
+  evaluateObservedAsync,
   formatValue,
   isOutputValue,
   lower,
@@ -17,6 +19,9 @@ import {
   renderOutputHtml,
   tokenize,
 } from "../../../../rix/src/index.js";
+import { createEvaluationBudget, evaluationCheckpoint, EvaluationLimitError } from "../../../../rix/src/runtime/evaluation-budget.js";
+import { disposeAsyncResources, drainBackgroundTasks } from "../../../../rix/src/runtime/async-runtime.js";
+import { withFinalizerActivationAsync, withFinalizerActivationSync } from "../../../../rix/src/runtime/finalization.js";
 import { clonePluginCatalog } from "../plugin-catalog-core.js";
 import { gridLatex } from "../output-latex.js";
 import { assertNotebookEngine } from "../../../docshell/src/contracts.js";
@@ -179,18 +184,45 @@ function createNotebookSlider(args, runtime) {
 function makeNotebookRuntime(engine, overrides, options) {
   const registry = createDefaultRegistry();
   const runtime = { registry, context: new Context(), sliderCounter: 0, sliderOverrides: overrides, sliders: [], currentSourceId: "document", mode: options.mode === "static" ? "static" : "live", currentPublication: null };
+  runtime.contexts = new Set([runtime.context]);
+  runtime.context.setEnv("__async_resource_contexts__", runtime.contexts);
+  options.captureRuntime?.(runtime);
+  runtime.controller = options.controller || new AbortController();
+  runtime.budget = options.async ? createEvaluationBudget({ maxSteps: options.maxSteps ?? 2_000_000, maxTimeMs: options.maxTimeMs ?? 30_000, signal: runtime.controller.signal }) : null;
+  runtime.taskWorkerPool = options.taskWorkerPool || engine.taskWorkerPool || null;
+  runtime.cleanupGraceMs = options.cleanupGraceMs ?? 250;
   const pluginCatalog = clonePluginCatalog(options.pluginCatalog || engine.pluginCatalog);
   const systemContext = createDefaultSystemContext({ frozen: false, pluginCatalog });
   systemContext.registerHost("slider", { impl(args) { return createNotebookSlider(args, runtime); }, doc: "Notebook-only interactive slider control" });
-  for (const mode of ["static", "live"]) systemContext.registerHost(mode, { lazy: true, impl(args, context, run) { if (args.length > 1) throw new Error(`.${mode} accepts at most one block`); if (args.length === 1 && runtime.mode === mode) context.withSharedBody(args[0], () => run(args[0])); return null; }, doc: `Evaluate a notebook block only in ${mode} mode` });
-  for (const channel of ["out", "staticout", "liveout"]) systemContext.registerHost(channel === "staticout" ? "staticOut" : channel === "liveout" ? "liveOut" : "out", { lazy: true, impl(args, _context, run) { if (args.length > 1) throw new Error(`.${channel} accepts zero or one argument`); if (!runtime.currentPublication) throw new Error(`.${channel} may only be used while running a notebook cell`); const target = channel === "out" ? "out" : channel === "staticout" ? "static" : "live"; if (target !== "out" && target !== runtime.mode) return null; if (runtime.currentPublication[target].declared) throw new Error(`.${channel} may only be used once per cell`); runtime.currentPublication[target] = { declared: true, suppressed: args.length === 0, value: args.length === 0 ? null : run(args[0]) }; return null; }, doc: "Choose the notebook publication output for this cell" });
+  for (const mode of ["static", "live"]) systemContext.registerHost(mode, {
+    lazy: true,
+    impl(args, context, run, execution) {
+      if (args.length > 1) throw new Error(`.${mode} accepts at most one block`);
+      if (args.length !== 1 || runtime.mode !== mode) return null;
+      if (execution?.promiseAware) return context.withSharedBodyAsync(args[0], async () => { await run(args[0]); return null; });
+      context.withSharedBody(args[0], () => run(args[0])); return null;
+    }, doc: `Evaluate a notebook block only in ${mode} mode`,
+  });
+  for (const channel of ["out", "staticout", "liveout"]) systemContext.registerHost(channel === "staticout" ? "staticOut" : channel === "liveout" ? "liveOut" : "out", {
+    lazy: true,
+    impl(args, _context, run, execution) {
+      if (args.length > 1) throw new Error(`.${channel} accepts zero or one argument`);
+      if (!runtime.currentPublication) throw new Error(`.${channel} may only be used while running a notebook cell`);
+      const target = channel === "out" ? "out" : channel === "staticout" ? "static" : "live";
+      if (target !== "out" && target !== runtime.mode) return null;
+      if (runtime.currentPublication[target].declared) throw new Error(`.${channel} may only be used once per cell`);
+      const publication = runtime.currentPublication[target] = { declared: true, suppressed: args.length === 0, value: null };
+      if (!args.length) return null;
+      if (execution?.promiseAware) return Promise.resolve(run(args[0])).then((value) => { publication.value = value; return null; });
+      publication.value = run(args[0]); return null;
+    }, doc: "Choose the notebook publication output for this cell",
+  });
   runtime.loadRixPlugin = ({ source, sourcePath, context, registry, systemContext: pluginSystemContext }) => parseAndEvaluate(source, { context, registry, systemContext: pluginSystemContext, file: sourcePath });
   for (const id of options.plugins || engine.plugins) pluginCatalog.load(id, { context: runtime.context, registry: runtime.registry, systemContext, loadRix: runtime.loadRixPlugin });
   systemContext.freeze(); runtime.systemContext = systemContext; return runtime;
 }
 
-function executeCell(cell, runtime) {
-  const context = cell.metadata.execution === "singleton" ? new Context() : cell.metadata.execution === "refresh" ? (runtime.context = new Context()) : runtime.context;
+function* executeCellSteps(cell, runtime, context) {
   runtime.currentSourceId = `cell:${cell.line}`;
   for (const [key, value] of Object.entries({ __system_context__: runtime.systemContext, __registry__: runtime.registry, __source__: cell.code, __current_file__: `<notebook cell at line ${cell.line}>`, __plugin_load_rix__: runtime.loadRixPlugin })) context.setEnv(key, value);
   const irNodes = lower(parse(cell.code)); const sources = splitTopLevelStatements(cell.code); const statements = []; let implicitOutput = { available: false, value: null };
@@ -209,18 +241,18 @@ function executeCell(cell, runtime) {
               ? "live"
               : null
         : null;
-      const observed = evaluateObserved(irNode, context, runtime.registry, runtime.systemContext, publicationTarget ? {
+      const observed = yield { irNode, context, observed: true, options: publicationTarget ? {
         selectValue: (value) => runtime.currentPublication[publicationTarget]?.declared
           ? runtime.currentPublication[publicationTarget].value
           : value,
-      } : {});
+      } : {} };
       const value = observed.value;
       const sliderName = source.code.match(/^\s*([a-z][a-zA-Z0-9_]*)\s*:=\s*\.slider\s*\(/)?.[1] || "slider";
       for (const slider of runtime.sliders.slice(sliderStart)) Object.assign(slider, { name: sliderName, line });
       if (publicationTarget && runtime.currentPublication[publicationTarget]?.declared) runtime.currentPublication[publicationTarget].observed = observed;
       if (!hostCommand) implicitOutput = { available: true, value, observed };
       statements.push({ line, code: source.code, value, observed, content: formatValue(value), html: isOutputValue(value) ? renderOutputHtml(value, formatValue) : null, kind: "result", position: cell.start + source.start });
-    } catch (error) { statements.push({ line, code: source.code, content: error instanceof Error ? error.message : String(error), kind: "error", position: cell.start + source.start }); break; }
+    } catch (error) { if (runtime.controller.signal.aborted || error?.code === "EVALUATION_LIMIT") throw error; statements.push({ line, code: source.code, content: error instanceof Error ? error.message : String(error), kind: "error", position: cell.start + source.start }); break; }
   }
   const channel = runtime.mode === "static" ? "static" : "live";
   const selected = runtime.currentPublication[channel].declared ? runtime.currentPublication[channel] : runtime.currentPublication.out.declared ? runtime.currentPublication.out : implicitOutput;
@@ -228,13 +260,60 @@ function executeCell(cell, runtime) {
   runtime.currentPublication = null; return { cell, statements, metadata: cell.metadata, staticOutput: runtime.mode === "static" ? publication : null, liveOutput: runtime.mode === "live" ? publication : null };
 }
 
-function executeInlineExpression(inline, runtime) {
+function* executeInlineSteps(inline, runtime) {
   const context = runtime.context; runtime.currentSourceId = `inline:${inline.line}`;
   for (const [key, value] of Object.entries({ __system_context__: runtime.systemContext, __registry__: runtime.registry, __source__: inline.expression, __current_file__: `<inline RiX expression at line ${inline.line}>`, __plugin_load_rix__: runtime.loadRixPlugin })) context.setEnv(key, value);
   const irNodes = lower(parse(inline.expression)); if (!irNodes.length) throw new Error("Inline RiX expression is empty"); let value; const sliderStart = runtime.sliders.length;
-  for (const node of irNodes) value = evaluate(node, context, runtime.registry, runtime.systemContext);
+  for (const irNode of irNodes) value = yield { irNode, context };
   for (const slider of runtime.sliders.slice(sliderStart)) Object.assign(slider, { name: "Slider", line: inline.line });
   const content = formatValue(value); return { start: inline.start, end: inline.end, replacement: content, statement: { line: inline.line, code: `@{${inline.expression}}`, content, kind: "result", label: "Inline RiX", position: inline.start } };
+}
+
+function prepareContext(runtime, context) {
+  runtime.contexts.add(context);
+  context.setEnv("__evaluation_budget__", runtime.budget);
+  context.setEnv("__async_resource_contexts__", runtime.contexts);
+  if (runtime.taskWorkerPool) context.setEnv("__async_task_worker_pool__", runtime.taskWorkerPool);
+  return context;
+}
+function cellContext(cell, runtime) {
+  return prepareContext(runtime, cell.metadata.execution === "singleton" ? new Context() : cell.metadata.execution === "refresh" ? (runtime.context = new Context()) : runtime.context);
+}
+function driveSync(steps, runtime) {
+  let step = steps.next();
+  while (!step.done) {
+    const { irNode, context, observed, options } = step.value;
+    try { const value = (observed ? evaluateObserved : evaluate)(irNode, context, runtime.registry, runtime.systemContext, options); step = steps.next(value); }
+    catch (error) { step = steps.throw(error); }
+  }
+  return step.value;
+}
+async function driveAsync(steps, runtime) {
+  let step = steps.next();
+  while (!step.done) {
+    const { irNode, context, observed, options } = step.value;
+    try { const value = await (observed ? evaluateObservedAsync : evaluateAsync)(irNode, context, runtime.registry, runtime.systemContext, options); evaluationCheckpoint(context); step = steps.next(value); }
+    catch (error) { step = steps.throw(error); }
+  }
+  return step.value;
+}
+function executeCell(cell, runtime) {
+  const context = cellContext(cell, runtime);
+  return withFinalizerActivationSync(context, () => driveSync(executeCellSteps(cell, runtime, context), runtime));
+}
+function executeInlineExpression(inline, runtime) {
+  const context = prepareContext(runtime, runtime.context);
+  return withFinalizerActivationSync(context, () => driveSync(executeInlineSteps(inline, runtime), runtime));
+}
+async function executeEventAsync(event, runtime) {
+  const context = event.type === "cell" ? cellContext(event.value, runtime) : prepareContext(runtime, runtime.context);
+  return withFinalizerActivationAsync(context, () => driveAsync(event.type === "cell" ? executeCellSteps(event.value, runtime, context) : executeInlineSteps(event.value, runtime), runtime), { graceMs: runtime.cleanupGraceMs });
+}
+function cancellation(message = "Notebook run superseded") { return new DOMException(message, "AbortError"); }
+async function settleWithin(promise, graceMs) {
+  let timer;
+  try { return await Promise.race([promise, new Promise((resolve) => { timer = setTimeout(() => resolve([new Error(`Notebook cleanup exceeded ${graceMs}ms grace`)]), graceMs); })]); }
+  finally { clearTimeout(timer); }
 }
 
 function replaceInlineExpressions(source, runs) { let cursor = 0; let rendered = ""; for (const run of runs) { rendered += source.slice(cursor, run.start) + run.replacement; cursor = run.end; } return rendered + source.slice(cursor); }
@@ -277,24 +356,85 @@ export function renderStaticDocument(document, runs, inlineRuns, options = {}) {
 }
 
 export function createRixNotebookEngine(configuration = {}) {
+  const ownedRuns = new Set();
+  let current = null;
+  let closed = false;
+  let generation = 0;
   const engine = {
     ...createOutputBundleHost({ assetStore: configuration.assetStore, authorizeExternal: configuration.authorizeExternal, format: formatValue }),
     pluginCatalog: configuration.pluginCatalog,
     plugins: configuration.plugins || [],
+    taskWorkerPool: configuration.taskWorkerPool || null,
     configure(next = {}) { if (next.pluginCatalog) this.pluginCatalog = next.pluginCatalog; if (next.plugins) this.plugins = next.plugins; return this; },
     parseDocument: parseNotebookDocument,
     validate(source) { const diagnostics = []; for (const cell of extractRixCells(source)) try { lower(parse(cell.code)); } catch (error) { diagnostics.push(diagnosticForRixError(error, cell)); } return diagnostics; },
     getCompletions() { const context = createDefaultSystemContext({ pluginCatalog: this.pluginCatalog }); return context.getAllNames().map((name) => ({ label: name, type: "function", detail: `.${name}`, info: context.get(name)?.doc || "RiX system capability" })); },
+    async executeDocumentAsync(source, options = {}) {
+      if (closed) throw new Error("Notebook engine is closed");
+      const token = options.isolated ? generation : ++generation;
+      if (!options.isolated && current) { ownedRuns.delete(current); await disposeNotebookRun(current); }
+      if (!options.isolated && token !== generation) throw cancellation();
+      const controller = new AbortController();
+      const abort = () => controller.abort(options.signal.reason || cancellation("Notebook run cancelled"));
+      options.signal?.addEventListener("abort", abort, { once: true });
+      if (options.signal?.aborted) abort();
+      const document = parseNotebookDocument(source);
+      let runtime;
+      try { controller.signal.throwIfAborted(); runtime = makeNotebookRuntime(this, options.sliderOverrides || new Map(), { ...options, controller, async: true, captureRuntime: (value) => { runtime = value; } }); }
+      catch (error) { options.signal?.removeEventListener("abort", abort); if (runtime) await disposeNotebookRun({ runtime }); throw error; }
+      const run = { document, cells: document.cells, inlineRuns: [], runs: new Array(document.cells.length), outputStatements: [], sliders: runtime.sliders, runtime };
+      ownedRuns.add(run); run.release = () => ownedRuns.delete(run);
+      if (!options.isolated) current = run;
+      const timer = runtime.timer = setTimeout(() => controller.abort(new EvaluationLimitError("Notebook evaluation time limit exceeded")), runtime.budget.maxTimeMs);
+      try {
+        for (const event of document.nodes) {
+          evaluationCheckpoint(prepareContext(runtime, runtime.context));
+          let result;
+          try { result = await executeEventAsync(event, runtime); }
+          catch (error) {
+            if (controller.signal.aborted || error?.code === "EVALUATION_LIMIT") throw error;
+            const content = error instanceof Error ? error.message : String(error);
+            result = event.type === "cell"
+              ? { cell: event.value, metadata: event.value.metadata, statements: [{ line: event.value.codeLine, code: event.value.code.trim(), content, kind: "error", position: event.start }] }
+              : { start: event.start, end: event.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", position: event.start } };
+          }
+          evaluationCheckpoint(runtime.context);
+          if (event.type === "cell") {
+            run.runs[event.value.index] = result;
+            for (const statement of result.statements) statement.cell = event.value;
+            run.outputStatements.push(...result.statements);
+          } else { run.inlineRuns.push(result); run.outputStatements.push(result.statement); }
+        }
+        run.outputStatements.sort((left, right) => left.position - right.position);
+        run.renderedSource = replaceInlineExpressions(source, run.inlineRuns);
+        run.staticRenderedSource = options.mode === "static" ? renderStaticDocument(document, run.runs, run.inlineRuns) : null;
+        return run;
+      } catch (error) { await disposeNotebookRun(run); ownedRuns.delete(run); throw error; }
+      finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); for (const context of runtime.contexts) if (context.getEnv("__evaluation_budget__", null) === runtime.budget) context.env.delete("__evaluation_budget__"); }
+    },
+    async reset() {
+      generation++; const runs = [...ownedRuns]; ownedRuns.clear(); current = null;
+      return (await Promise.all(runs.map((run) => disposeNotebookRun(run)))).flat();
+    },
+    async dispose() { closed = true; const failures = await this.reset(); if (configuration.ownsTaskWorkerPool) await this.taskWorkerPool?.dispose(); return failures; },
     executeDocument(source, options = {}) {
+      if (closed) throw new Error("Notebook engine is closed");
       const document = parseNotebookDocument(source); const runtime = makeNotebookRuntime(this, options.sliderOverrides || new Map(), options); const runs = new Array(document.cells.length); const inlineRuns = []; const outputStatements = [];
       for (const event of document.nodes) if (event.type === "cell") { const cell = event.value; try { runs[cell.index] = executeCell(cell, runtime); } catch (error) { runs[cell.index] = { cell, metadata: cell.metadata, statements: [{ line: cell.codeLine, code: cell.code.trim(), content: error instanceof Error ? error.message : String(error), kind: "error", position: cell.start }] }; } for (const statement of runs[cell.index].statements) statement.cell = cell; outputStatements.push(...runs[cell.index].statements); } else { try { const run = executeInlineExpression(event.value, runtime); inlineRuns.push(run); outputStatements.push(run.statement); } catch (error) { const content = error instanceof Error ? error.message : String(error); const run = { start: event.value.start, end: event.value.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", position: event.value.start } }; inlineRuns.push(run); outputStatements.push(run.statement); } }
-      return { document, cells: document.cells, inlineRuns, runs, outputStatements: outputStatements.sort((left, right) => left.position - right.position), sliders: runtime.sliders, runtime, renderedSource: replaceInlineExpressions(source, inlineRuns), staticRenderedSource: options.mode === "static" ? renderStaticDocument(document, runs, inlineRuns) : null };
+      const run = { document, cells: document.cells, inlineRuns, runs, outputStatements: outputStatements.sort((left, right) => left.position - right.position), sliders: runtime.sliders, runtime, renderedSource: replaceInlineExpressions(source, inlineRuns), staticRenderedSource: options.mode === "static" ? renderStaticDocument(document, runs, inlineRuns) : null };
+      ownedRuns.add(run); run.release = () => ownedRuns.delete(run); return run;
     },
   };
   return assertNotebookEngine(engine);
 }
 
 export function disposeNotebookRun(run) {
+  if (!run) return Promise.resolve([]);
+  run.release?.();
+  if (run.runtime?.disposal) return run.runtime.disposal;
+  if (run.runtime?.contexts) run.runtime.contexts.closed = true;
+  clearTimeout(run.runtime?.timer);
+  run.runtime?.controller?.abort(cancellation("Notebook run disposed"));
   const observed = new Set();
   for (const statement of run?.outputStatements || []) if (statement.observed) observed.add(statement.observed);
   for (const cellRun of run?.runs || []) {
@@ -302,4 +442,12 @@ export function disposeNotebookRun(run) {
     if (cellRun?.staticOutput?.observed) observed.add(cellRun.staticOutput.observed);
   }
   for (const result of observed) result.dispose?.();
+  const runtime = run.runtime;
+  const cleanup = Promise.all([...(runtime?.contexts || [])].map(async (context) => {
+    const failures = await disposeAsyncResources(context, { kind: "notebook disposed" });
+    return [...failures, ...await drainBackgroundTasks(context)];
+  })).then((results) => results.flat());
+  run.disposal = settleWithin(cleanup, runtime?.cleanupGraceMs ?? 250);
+  if (runtime) runtime.disposal = run.disposal;
+  return run.disposal;
 }

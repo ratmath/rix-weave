@@ -1,3 +1,4 @@
+import { createNotebookTaskWorkers } from "./notebook-web/task-workers.js";
 import { buildNotebookPublication, replaceNotebookPublication } from "./notebook-web/publication-workflow.js";
 import { quartoProjectYaml as sharedQuartoProjectYaml } from "../../../rix/src/runtime/publication-plan.js";
 import { bundleNotebookRun, createNotebookAssetStore, createBoundedBinaryStore } from "./notebook-web/output-assets.js";
@@ -165,7 +166,7 @@ let pluginSettings = {
   approvedJavascriptPlugins: [],
 };
 let editingPluginSettings = null;
-const rixEngine = createRixNotebookEngine({ pluginCatalog: pluginCatalogTemplate, plugins: configuredPlugins });
+const rixEngine = createRixNotebookEngine({ taskWorkerPool: createNotebookTaskWorkers(), ownsTaskWorkerPool: true, pluginCatalog: pluginCatalogTemplate, plugins: configuredPlugins });
 let staticPreviewObjectUrls = [];
 let outputWidgetDisposers = [];
 let previewWidgetDisposers = [];
@@ -555,7 +556,7 @@ function appendOutput(statement, runtime) {
 }
 
 function executeDocument(source, options = {}) {
-  return rixEngine.executeDocument(source, {
+  return rixEngine.executeDocumentAsync(source, {
     ...options,
     sliderOverrides: options.sliderOverrides || sliderOverrides,
     pluginCatalog: options.pluginCatalog || pluginCatalogTemplate,
@@ -662,12 +663,13 @@ function renderSliderControls(sliders) {
   }
 }
 
-function renderDocumentPreview(documentRun) {
+async function renderDocumentPreview(documentRun) {
   if (previewMode === "live") {
     renderMarkdown(documentRun.renderedSource, documentRun.runs, { runtime: documentRun.runtime });
     return;
   }
-  const staticRun = executeDocument(documentRun.document.source, { mode: "static", sliderOverrides: new Map() });
+  const staticRun = await executeDocument(documentRun.document.source, { mode: "static", isolated: true, sliderOverrides: new Map() });
+  if (latestDocumentRun !== documentRun) { await disposeNotebookRun(staticRun); return; }
   releaseStaticPreviewObjectUrls();
   const staticSource = renderStaticDocument(
     staticRun.document,
@@ -676,6 +678,7 @@ function renderDocumentPreview(documentRun) {
     { graphicReference: staticPreviewGraphicUrl },
   );
   renderStaticPreview(staticSource);
+  await disposeNotebookRun(staticRun);
 }
 
 function renderStaticPreview(source) {
@@ -698,11 +701,16 @@ function renderStaticPreview(source) {
   enhanceSheetViews(preview, { onActivate: insertSheetAddress });
 }
 
+let notebookRunGeneration = 0;
 async function runNotebook() {
+  const generation = ++notebookRunGeneration;
   window.clearTimeout(liveRunTimer);
   const source = editor.state.doc.toString();
   await prepareJavaScriptPlugins(source);
-  const documentRun = executeDocument(source);
+  if (generation !== notebookRunGeneration) return;
+  let documentRun;
+  try { documentRun = await executeDocument(source); } catch (error) { if (generation !== notebookRunGeneration || error?.name === "AbortError") return; throw error; }
+  if (generation !== notebookRunGeneration || source !== editor.state.doc.toString()) { await disposeNotebookRun(documentRun); return; }
   disposeNotebookRun(latestDocumentRun);
   latestDocumentRun = documentRun;
   disposeWidgetMounts(outputWidgetDisposers);
@@ -710,7 +718,8 @@ async function runNotebook() {
 
   if (documentRun.cells.length === 0 && documentRun.inlineRuns.length === 0) {
     latestRuns = [];
-    renderDocumentPreview(documentRun);
+    await renderDocumentPreview(documentRun);
+    if (generation !== notebookRunGeneration) return;
     renderSliderControls([]);
     const placeholder = document.createElement("p");
     placeholder.className = "output-placeholder";
@@ -723,7 +732,8 @@ async function runNotebook() {
   for (const statement of documentRun.outputStatements) appendOutput(statement, documentRun.runtime);
   const succeeded = documentRun.runs.filter((run) => run.statements.every((statement) => statement.kind === "result")).length;
   latestRuns = documentRun.runs;
-  renderDocumentPreview(documentRun);
+  await renderDocumentPreview(documentRun);
+  if (generation !== notebookRunGeneration) return;
   renderSliderControls(documentRun.sliders);
   setPreviewStale(false);
   status.textContent = `${succeeded} of ${documentRun.cells.length} RiX cells and ${documentRun.inlineRuns.length} inline expressions ran`;
@@ -1265,11 +1275,11 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
   const liveTargets = new Set();
   for (const notePath of notes) {
     const source = await readTextFile(notePath);
-    const staticDocumentRun = await bundleNotebookRun(executeDocument(source, {
-      mode: "static",
-      sliderOverrides: new Map(),
-    }), { store: createNotebookAssetStore(createBoundedBinaryStore(openAssetFile), { directory: pathDirectory(notePath) }) });
-    const liveDocumentRun = executeDocument(source, { mode: "live", sliderOverrides: new Map() });
+    let staticDocumentRun = null, liveDocumentRun = null;
+    try {
+    staticDocumentRun = await executeDocument(source, { mode: "static", isolated: true, sliderOverrides: new Map() });
+    staticDocumentRun = await bundleNotebookRun(staticDocumentRun, { store: createNotebookAssetStore(createBoundedBinaryStore(openAssetFile), { directory: pathDirectory(notePath) }) });
+    liveDocumentRun = await executeDocument(source, { mode: "live", isolated: true, sliderOverrides: new Map() });
     const relativePath = pathRelative(projects.project.directory, notePath);
     const liveCellIndexes = new Set(liveDocumentRun.runs.flatMap((run, index) => (
       run?.metadata.role !== "set" && run?.liveOutput ? [index] : []
@@ -1355,6 +1365,7 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
         }
       }
     }
+    } finally { await disposeNotebookRun(staticDocumentRun); await disposeNotebookRun(liveDocumentRun); }
   }
   if (outputRoots.quarto) await writeTextFile(pathJoin(outputRoots.quarto, "_quarto.yml"), quartoProjectYaml(scopeName, quartoPages));
   for (const target of liveTargets) await copyLiveRuntimeAssets(outputRoots[target]);
@@ -1430,7 +1441,9 @@ async function exportOpenDocument() {
   await copyKatexAssets(outputRoots.html);
   await copyKatexAssets(outputRoots.quarto);
   const source = editor.state.doc.toString();
-  const documentRun = await bundleNotebookRun(executeDocument(source, { mode: "static", sliderOverrides: new Map() }), { store: createNotebookAssetStore(createBoundedBinaryStore(openAssetFile), { directory: pathDirectory(notePath) }) });
+  let documentRun = await executeDocument(source, { mode: "static", isolated: true, sliderOverrides: new Map() });
+  try {
+  documentRun = await bundleNotebookRun(documentRun, { store: createNotebookAssetStore(createBoundedBinaryStore(openAssetFile), { directory: pathDirectory(notePath) }) });
   const staticSources = new Map();
   for (const [target, root] of Object.entries(outputRoots)) {
     await materializeOutputAssets(documentRun, `${name}.md`, root);
@@ -1446,6 +1459,7 @@ async function exportOpenDocument() {
   );
   await writeTextFile(pathJoin(outputRoots.quarto, `${name}.qmd`), staticSources.get("quarto"));
   await writeTextFile(pathJoin(outputRoots.quarto, "_quarto.yml"), quartoProjectYaml(name, [{ path: `${name}.qmd`, title: name }]));
+  } finally { await disposeNotebookRun(documentRun); }
   setStatus("Exported current note");
   messageDialogTitle.textContent = "Export complete";
   messageDialogBody.textContent = `Wrote the current note to ${exportRoot}.`;
@@ -2301,4 +2315,4 @@ async function initializeNotebook() {
 }
 
 initializeNotebook().catch(showError);
-window.addEventListener("pagehide", () => disposeNotebookRun(latestDocumentRun));
+window.addEventListener("pagehide", () => { notebookRunGeneration++; disposeNotebookRun(latestDocumentRun); rixEngine.dispose(); });

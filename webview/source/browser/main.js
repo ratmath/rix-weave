@@ -1,6 +1,7 @@
+import { createNotebookTaskWorkers } from "../notebook-web/task-workers.js";
 import { buildNotebookPublication } from "../notebook-web/publication-workflow.js";
 import { bundleNotebookRun, createNotebookAssetStore } from "../notebook-web/output-assets.js";
-import { renderStaticDocument } from "../notebook-web/rix-engine.js";
+import { renderStaticDocument, disposeNotebookRun } from "../notebook-web/rix-engine.js";
 import docshellManifest from "../../../docshell.manifest.json" with { type: "json" };
 import { createFilePolicy } from "../../../docshell/src/file-policy.js";
 import { BrowserDocumentStore, createSingleFileStore } from "../../../docshell/src/browser/browser-document-store.js";
@@ -94,7 +95,7 @@ async function persist(source) {
     catch { elements.status.textContent = "Could not save browser recovery copy"; }
   }, 500);
 }
-const engine = createRixNotebookEngine({ pluginCatalog: createNotebookBundledPluginCatalog() });
+const engine = createRixNotebookEngine({ taskWorkerPool: createNotebookTaskWorkers(), ownsTaskWorkerPool: true, pluginCatalog: createNotebookBundledPluginCatalog() });
 const notebook = mountNotebookWeb({
   engine, elements, initialDocument: starter,
   host: { resolveAsset, onDocumentChange(source) { store.writeText(activePath, source); persist(source); } },
@@ -104,7 +105,7 @@ function clearStore() { store.dispose?.(); }
 async function setActiveDocument(path, source = null) {
   activePath = store.normalize(path); filename = basename(activePath); saveHandle = null;
   title.textContent = workspaceKind === "project" ? projectManager.project.title : workspaceKind === "folder" ? archiveLabel() : filename;
-  notebook.setDocument(source ?? await store.readText(activePath)); await renderSidebar();
+  await notebook.setDocument(source ?? await store.readText(activePath)); await renderSidebar();
 }
 function treeButton(label, path, className = "tree-note", open = null) {
   const button = document.createElement("button"); button.type = "button"; button.className = className; button.textContent = label;
@@ -295,7 +296,9 @@ async function buildStaticExport({ scope, notebookPath, targets, profileName = n
   const roots = { markdown: "/markdown", html: "/html", quarto: "/quarto" };
   for (const notePath of notes) {
     const relative = relativeExportPath(notePath);
-    const run = await bundleNotebookRun(engine.executeDocument(await store.readText(notePath), { mode: "static", sliderOverrides: new Map() }), { store: createNotebookAssetStore(store, { directory: dirname(notePath) }) });
+    let run = await engine.executeDocumentAsync(await store.readText(notePath), { mode: "static", isolated: true, sliderOverrides: new Map() });
+    try {
+    run = await bundleNotebookRun(run, { store: createNotebookAssetStore(store, { directory: dirname(notePath) }) });
     const staticSource = renderStaticDocument(run.document, run.runs, run.inlineRuns);
     for (const [target, root] of Object.entries(roots)) if (targets[target]) {
       const parent = dirname(joinPath(root, relative));
@@ -305,6 +308,7 @@ async function buildStaticExport({ scope, notebookPath, targets, profileName = n
     if (targets.markdown) output.set(joinPath(roots.markdown, relative), staticSource);
     if (targets.html) output.set(joinPath(roots.html, relative.replace(/\.(?:md|markdown)$/i, ".html")), staticHtml(basename(notePath), staticSource));
     if (targets.quarto) output.set(joinPath(roots.quarto, relative.replace(/\.(?:md|markdown)$/i, ".qmd")), staticSource);
+    } finally { await disposeNotebookRun(run); }
   }
   for (const [path, value] of store.entries()) {
     if (isMarkdown(path)) continue;
@@ -351,3 +355,5 @@ exportDialog.addEventListener("close", async () => {
     const requested = window.prompt("Export filename", name); if (!requested) return; const exportName = normalizedFilename(requested, ".zip"); downloadBlob(blob, exportName); elements.status.textContent = `Downloaded ${exportName}; Safari cannot choose a download location.`;
   } catch (error) { elements.status.textContent = `Could not export: ${error.message}`; }
 });
+
+window.addEventListener("pagehide", () => notebook.destroy());

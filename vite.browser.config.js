@@ -4,6 +4,7 @@ import { notebookManualChunks, rixSourcePlugin } from "./vite.shared.js";
 
 export default defineConfig({
   plugins: [rixSourcePlugin()],
+  worker: { format: "es", plugins: () => [rixSourcePlugin()] },
   root: fileURLToPath(new URL("./.docshell-build/browser", import.meta.url)),
   publicDir: false,
   esbuild: { keepNames: true },

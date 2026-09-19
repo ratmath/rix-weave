@@ -43,6 +43,8 @@ export function mountNotebookWeb({ engine, elements, host: callbacks, initialDoc
   const defaultFence = renderer.renderer.rules.fence;
   const defaultImage = renderer.renderer.rules.image;
   let currentRun = null;
+  let runGeneration = 0;
+  let destroyed = false;
   let applying = false;
   let rightPane = "results";
   let delayedRun = null;
@@ -175,16 +177,20 @@ export function mountNotebookWeb({ engine, elements, host: callbacks, initialDoc
       label.append(heading, input, value); sliderControlList.append(label);
     }
   }
-  function run(options = {}) {
+  async function run(options = {}) {
+    const generation = ++runGeneration;
+    const source = view.state.doc.toString();
     window.clearTimeout(delayedRun);
     try {
-      disposeNotebookRun(currentRun);
-      currentRun = engine.executeDocument(view.state.doc.toString(), { ...options, sliderOverrides });
+      await disposeNotebookRun(currentRun);
+      const result = await (engine.executeDocumentAsync?.(source, { ...options, sliderOverrides }) ?? engine.executeDocument(source, { ...options, sliderOverrides }));
+      if (destroyed || generation !== runGeneration || source !== view.state.doc.toString()) { await disposeNotebookRun(result); return null; }
+      currentRun = result;
       renderResults(currentRun); renderPreview(currentRun); renderSliders(currentRun.sliders);
       setStatus(`${currentRun.cells.length} RiX cells and ${currentRun.inlineRuns.length} inline expressions ran`); host.onRun(currentRun); return currentRun;
-    } catch (error) { host.onError(error); throw error; }
+    } catch (error) { if (destroyed || generation !== runGeneration || error?.name === "AbortError") return null; host.onError(error); throw error; }
   }
-  function scheduleRun(delay = 500) { window.clearTimeout(delayedRun); delayedRun = window.setTimeout(run, delay); }
+  function scheduleRun(delay = 500) { window.clearTimeout(delayedRun); delayedRun = window.setTimeout(() => { run().catch(() => {}); }, delay); }
   function setRightPane(next) {
     rightPane = next;
     if (previewPane) previewPane.hidden = next !== "preview";
@@ -204,7 +210,7 @@ export function mountNotebookWeb({ engine, elements, host: callbacks, initialDoc
     get editor() { return view; }, get document() { return view.state.doc.toString(); }, get lastRun() { return currentRun; },
     setDocument(source) { applying = true; view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } }); applying = false; sliderOverrides.clear(); return run(); },
     jumpToLine(line) { const target = view.state.doc.line(Math.min(line, view.state.doc.lines)); view.dispatch({ selection: { anchor: target.from }, scrollIntoView: true }); view.focus(); },
-    run, scheduleRun, validate() { return engine.validate(view.state.doc.toString()); }, setRightPane, toggleRightPane() { setRightPane(rightPane === "preview" ? "results" : "preview"); }, destroy() { window.clearTimeout(delayedRun); disposeWidgets(); disposeNotebookRun(currentRun); view.destroy(); },
+    run, scheduleRun, validate() { return engine.validate(view.state.doc.toString()); }, setRightPane, toggleRightPane() { setRightPane(rightPane === "preview" ? "results" : "preview"); }, destroy() { destroyed = true; runGeneration++; window.clearTimeout(delayedRun); disposeWidgets(); disposeNotebookRun(currentRun); engine.dispose?.(); view.destroy(); },
   };
-  runButton?.addEventListener("click", () => run()); toggleRightPaneButton?.addEventListener("click", () => api.toggleRightPane()); setRightPane("results"); run(); return api;
+  runButton?.addEventListener("click", () => { run().catch(() => {}); }); toggleRightPaneButton?.addEventListener("click", () => api.toggleRightPane()); setRightPane("results"); run().catch(() => {}); return api;
 }

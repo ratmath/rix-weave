@@ -309,6 +309,17 @@ Tauri writes development and build artifacts below `src-tauri/target/`; they are
 intentionally ignored. A distributable app for other Macs will eventually need
 Apple signing and notarization, but neither is required for local development.
 
+## Async execution
+
+Both workbenches await cells and inline values in document order, cancel
+superseded runs and close owned async resources. Eligible pure collection
+tasks use a bounded local worker pool. The synchronous embedding API remains
+available. See [task workers](../rix/documentation/eval/task-workers.md) for
+supported captures, budgets and cleanup. After `bun run build:browser`,
+`bun scripts/check-async-browser.js` verifies real browser worker execution and
+rapid rerun cancellation (set `RIX_PLAYWRIGHT_MODULE` / `RIX_CHROME_EXECUTABLE`
+when Playwright or Chrome are installed outside this project).
+
 ## Remaining integration work
 
 Reconciled 2026-09-19. The umbrella `ratmath/WORK_PLAN.md` (O3–O7, H2,
@@ -319,8 +330,6 @@ export are delivered features, not future foundation work.
   SVG/PNG assets through shared publication services.
 - Complete shared language-service completion/diagnostic integration in both
   workbenches, retaining their intentional host differences.
-- Add async evaluation/cancellation to the shared notebook engine and verify
-  native/browser behavior; ordinary sync execution remains supported.
 - Complete browser/native export capability parity where the host supports it,
   with explicit static fallbacks elsewhere.
 - Embed RiXCel documents and explicit named exports after their module contract

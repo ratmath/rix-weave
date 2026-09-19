@@ -44,3 +44,17 @@ rix-nb/
 inputs are likewise generated from DocShell templates. The Tauri package
 identity/icons and RiX workbenches remain in the application repository, while
 the reusable host is installed from its separate repository at `docshell/`.
+
+## Async execution ownership
+
+Both workbenches await `executeDocumentAsync`, retain document order, and check
+a run generation before rendering. Rerun/reset/close dispose observed handles,
+abort owned async resources and drain background tasks within a cleanup grace
+period. Static exports use isolated runs and release them after materialization.
+The synchronous embedding entry point remains available.
+
+Native and browser builds package a local `rix.task-worker/1` worker pool for
+eligible pure scheduler leaves. This is separate from the editor host execution
+worker service. Only explicit core operations and bounded inert exact values
+cross the worker boundary; plugin closures and host capabilities stay with
+the owner. See [the protocol and limits](../rix/documentation/eval/task-workers.md).

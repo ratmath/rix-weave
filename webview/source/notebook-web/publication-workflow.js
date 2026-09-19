@@ -72,12 +72,13 @@ export async function buildNotebookPublication({notes,store,engine,profile:optio
       for(const[path,data]of files)if(path.startsWith(prefix+"/"))artifacts.push({path,bytes:data.length,sha256:await digest(data)});
       documents.push({id,input,source:relative,status:"built",targets:profile.targets,artifacts,diagnostics:jobDiagnostics});
     }catch(error){signal?.throwIfAborted();jobDiagnostics.push({level:"error",code:"notebook-publication-failed",message:error.message});documents.push({id,input,source:relative,status:"failed",targets:profile.targets,artifacts:[],diagnostics:jobDiagnostics});}
-    finally{disposeNotebookRun(run);}
+    finally{await disposeNotebookRun(run);await isolated.reset?.();}
     diagnostics.push(...jobDiagnostics.map(entry=>({...entry,document:id,input,source:relative})));
   }
   if(pages.length)put("_quarto.yml",quartoProjectYaml(title,pages));
   const manifest={schema:PUBLICATION_MANIFEST_SCHEMA,profile:profile.name,documents,diagnostics};
   put("manifest.json",JSON.stringify(manifest,null,2)+"\n");
+  await isolated.dispose?.();
   return {ok:documents.every(document=>document.status==="built"),files,manifest};
 }
 
