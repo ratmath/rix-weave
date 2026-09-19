@@ -300,12 +300,23 @@ Tauri writes development and build artifacts below `src-tauri/target/`; they are
 intentionally ignored. A distributable app for other Macs will eventually need
 Apple signing and notarization, but neither is required for local development.
 
-## Next slices
+## Remaining integration work
 
-1. Add named export profiles to `project.toml` and `notebook.toml`.
-2. Preserve figure labels/cross-references and add PNG output where a target needs it.
-3. Add a dedicated RiX CodeMirror language package, completion, and diagnostics.
-4. Package live RiX cells for optional interactive HTML export.
+Reconciled 2026-09-19. The umbrella `ratmath/WORK_PLAN.md` (O3–O7, H2,
+R2, C3) is the execution queue. Current CodeMirror editing and native live HTML
+export are delivered features, not future foundation work.
+
+- Add named export profiles to `project.toml` and `notebook.toml`.
+- Preserve cross-note figure labels/references and resolve target-specific
+  SVG/PNG assets through shared publication services.
+- Complete shared language-service completion/diagnostic integration in both
+  workbenches, retaining their intentional host differences.
+- Add async evaluation/cancellation to the shared notebook engine and verify
+  native/browser behavior; ordinary sync execution remains supported.
+- Complete browser/native export capability parity where the host supports it,
+  with explicit static fallbacks elsewhere.
+- Embed RiXCel documents and explicit named exports after their module contract
+  is implemented; avoid implicit execution through note references.
 
 ## Design notes
 
