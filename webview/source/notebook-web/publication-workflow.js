@@ -1,3 +1,4 @@
+import { createNotebookCelReader } from "./cel-reader.js";
 import { rewriteNotebookLinks, publicationNotePath, NOTE_EXTENSION } from "./document-references.js";
 /** Host-neutral Notebook profile builds. Complete results are committed by the host. */
 import { createPublicationProfile, PUBLICATION_MANIFEST_SCHEMA, PUBLICATION_TARGETS } from "../../../../rix/src/runtime/publication-workflow.js";
@@ -18,7 +19,7 @@ function localPath(note,ref,root) {
   if(root!=="/"&&!path.startsWith(root.replace(/\/$/,"")+"/"))throw new Error("Image reference leaves the selected project");
   return path;
 }
-export async function buildNotebookPublication({notes,store,engine,profile:options={},profileName="default",root="/",title="RiX Notebook",signal,renderHtml,renderLiveHtml=null,extraAssets=new Map()}) {
+export async function buildNotebookPublication({notes,store,engine,profile:options={},profileName="default",root="/",title="RiX Notebook",signal,renderHtml,renderLiveHtml=null,extraAssets=new Map(),readCelDocumentForNote}) {
   const profile=createPublicationProfile(options,profileName);
   if(!Array.isArray(notes)||!notes.length||notes.length>profile.maxDocuments)throw new Error("Notebook publication document budget exceeded");
   if(notes.length*Object.keys(profile.inputs).length*profile.targets.length>profile.maxJobs)throw new Error("Notebook publication job budget exceeded");
@@ -44,8 +45,9 @@ export async function buildNotebookPublication({notes,store,engine,profile:optio
         if(!files.has(`${prefix}/${asset}`))put(`${prefix}/${asset}`,data);
         source=source.replace(syntax,`![${alt}](${asset})`);
       }catch(error){source=source.replace(syntax,`${alt} (image unavailable: ${ref})`);jobDiagnostics.push({level:"warning",code:"notebook-image-unavailable",message:error.message});}}
+      const readCelDocument=readCelDocumentForNote?.(note) ?? createNotebookCelReader({store,notePath:note,root,host:"Notebook publication"});
       const evaluatedSource=prelude?`\`\`\`rix set\n${prelude}\n\`\`\`\n\n${source}`:source;
-      run=await (isolated.executeDocumentAsync?.(evaluatedSource,{mode:"static",sliderOverrides:new Map(),signal})??isolated.executeDocument(evaluatedSource,{mode:"static",sliderOverrides:new Map()}));
+      run=await (isolated.executeDocumentAsync?.(evaluatedSource,{mode:"static",sliderOverrides:new Map(),signal,readCelDocument})??isolated.executeDocument(evaluatedSource,{mode:"static",sliderOverrides:new Map(),readCelDocument}));
       const failures=run.outputStatements.filter(statement=>statement.kind==="error");if(failures.length)throw new Error(failures.map(failure=>`line ${failure.line}: ${failure.content}`).join("\n"));
       if(Object.keys(profile.plan).length)run={...run,runs:run.runs.map(cell=>cell.staticOutput?.value?.type==="output"?{...cell,staticOutput:{...cell.staticOutput,value:withPublicationPlan(cell.staticOutput.value,{...cell.staticOutput.value.publicationPlan,...profile.plan})}}:cell)};
       const originalAssets=[];const seenAssets=new Set();

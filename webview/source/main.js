@@ -1,3 +1,4 @@
+import { createNotebookCelReader } from "./notebook-web/cel-reader.js";
 import { notebookExportCapabilities, updateExportCapabilityNotice } from "./notebook-web/export-capabilities.js";
 import { notebookMarkdownReferences, rewriteNotebookLinks, noteTargetPath } from "./notebook-web/document-references.js";
 import { notebookCompletionSource, notebookHoverSource } from "./notebook-web/authoring.js";
@@ -164,7 +165,10 @@ let pluginSettings = {
   approvedJavascriptPlugins: [],
 };
 let editingPluginSettings = null;
-const rixEngine = createRixNotebookEngine({ taskWorkerPool: createNotebookTaskWorkers(), ownsTaskWorkerPool: true, pluginCatalog: pluginCatalogTemplate, plugins: configuredPlugins });
+function celReaderForNote(notePath = activeDocument.path) {
+  return createNotebookCelReader({ store: createBoundedBinaryStore(openAssetFile), notePath, root: projects.project?.directory || folderWorkspace?.directory, host: "native Notebook" });
+}
+const rixEngine = createRixNotebookEngine({ readCelDocument: (path, options) => celReaderForNote()(path, options), taskWorkerPool: createNotebookTaskWorkers(), ownsTaskWorkerPool: true, pluginCatalog: pluginCatalogTemplate, plugins: configuredPlugins });
 let staticPreviewObjectUrls = [];
 let outputWidgetDisposers = [];
 let previewWidgetDisposers = [];
@@ -1168,7 +1172,7 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
       if (namedProfile.live) await addLocalAsset("assets/rix-live.js", new URL("rix-live.js", LIVE_RUNTIME_PUBLIC_ROOT));
     }
     const result = await buildNotebookPublication({ notes, root: projects.project.directory, title: scopeName,
-      store: { readText: readTextFile, ...createBoundedBinaryStore(openAssetFile) }, engine: rixEngine,
+      store: { readText: readTextFile, ...createBoundedBinaryStore(openAssetFile) }, engine: rixEngine, readCelDocumentForNote: celReaderForNote,
       profile: namedProfile, profileName, extraAssets: assets,
       renderHtml: (title, markdown) => staticHtmlDocument(title, markdown, "assets/katex/katex.min.css"),
       renderLiveHtml: (title, markdown, source, options) => staticHtmlDocument(title, markdown, "assets/katex/katex.min.css", source, "assets/rix-live.js", options),
@@ -1198,9 +1202,9 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
     const source = await readTextFile(notePath);
     let staticDocumentRun = null, liveDocumentRun = null;
     try {
-    staticDocumentRun = await executeDocument(source, { mode: "static", isolated: true, sliderOverrides: new Map() });
+    staticDocumentRun = await executeDocument(source, { mode: "static", isolated: true, sliderOverrides: new Map(), readCelDocument: celReaderForNote(notePath) });
     staticDocumentRun = await bundleNotebookRun(staticDocumentRun, { store: createNotebookAssetStore(createBoundedBinaryStore(openAssetFile), { directory: pathDirectory(notePath) }) });
-    liveDocumentRun = await executeDocument(source, { mode: "live", isolated: true, sliderOverrides: new Map() });
+    liveDocumentRun = await executeDocument(source, { mode: "live", isolated: true, sliderOverrides: new Map(), readCelDocument: celReaderForNote(notePath) });
     const relativePath = pathRelative(projects.project.directory, notePath);
     const liveCellIndexes = new Set(liveDocumentRun.runs.flatMap((run, index) => (
       run?.metadata.role !== "set" && run?.liveOutput ? [index] : []

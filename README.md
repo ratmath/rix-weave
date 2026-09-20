@@ -411,3 +411,30 @@ Notebook engine are cooperative between export steps, not preemptive inside a ce
 
 See [publication workflows](../rix/documentation/eval/publication-workflows.md)
 and the [runnable showcase](../rix/examples/publication-workflow/README.md).
+
+## Embedded Cel workbooks
+
+Notebook cells can open `.rixcel` sheets and `.rixbook` workbooks with
+`book := .celOpen("data.rixbook", "sales")`. Paths are relative to the current
+note, including when a publication exports several notes. Native Notebook reads
+only through the selected project/folder grant; Notebook Web reads only from the
+uploaded project ZIP. Opening a standalone note does not grant access to adjacent
+files. Paths must remain inside the selected workspace; URLs, scripts, notebook
+imports, cycles, and documents over 8 MB are rejected.
+
+Use `.cel(JSON text, optionalDocumentId)` for embedded data requiring no host
+reader. Both constructors return an independent session handle:
+
+- `book.Sheet()` renders an editable sheet using the shared RiX Sheet widget.
+- `book.View("subtotal")` renders a named export and observes edits on that handle.
+- `book.Get("subtotal")` reads its exact current value for a calculation.
+- `book.Set([1,1], "7/3")` commits a source edit through workbook validation.
+- `book.Record()` returns JSON for an explicit save; edits never write back to disk.
+- `book.Dispose()` releases the handle early. Rerunning or closing the notebook
+  also disposes its embedded workbooks and subscriptions.
+
+A different constructor call creates independent state, even for the same path.
+Static exports contain the rendered sheet and named values. A downloaded live
+page cannot reopen project paths; its initial static result remains available.
+Embed JSON with `.cel` for portable interaction. See the runnable
+[Cel notebook example](examples/cel-embedding/README.md).

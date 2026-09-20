@@ -1,4 +1,5 @@
 import { outputAnchor } from "./document-references.js";
+import { registerNotebookCel } from "./cel-embedding.js";
 import { createNotebookAuthoringService, diagnosticForRixError } from "./authoring.js";
 export { diagnosticForRixError } from "./authoring.js";
 import { createOutputBundleHost } from "../../../../rix/src/runtime/output-bundle-host.js";
@@ -190,6 +191,7 @@ function makeNotebookRuntime(engine, overrides, options) {
   runtime.cleanupGraceMs = options.cleanupGraceMs ?? 250;
   const pluginCatalog = clonePluginCatalog(options.pluginCatalog || engine.pluginCatalog);
   const systemContext = createDefaultSystemContext({ frozen: false, pluginCatalog });
+  registerNotebookCel(systemContext, runtime, engine, options);
   systemContext.registerHost("slider", { impl(args) { return createNotebookSlider(args, runtime); }, doc: "Notebook-only interactive slider control" });
   for (const mode of ["static", "live"]) systemContext.registerHost(mode, {
     lazy: true,
@@ -362,7 +364,8 @@ export function createRixNotebookEngine(configuration = {}) {
     pluginCatalog: configuration.pluginCatalog,
     plugins: configuration.plugins || [],
     taskWorkerPool: configuration.taskWorkerPool || null,
-    configure(next = {}) { if (next.pluginCatalog) this.pluginCatalog = next.pluginCatalog; if (next.plugins) this.plugins = next.plugins; authoring.invalidate(); return this; },
+    readCelDocument: configuration.readCelDocument || null,
+    configure(next = {}) { if (next.pluginCatalog) this.pluginCatalog = next.pluginCatalog; if (next.plugins) this.plugins = next.plugins; if (Object.hasOwn(next, 'readCelDocument')) this.readCelDocument = next.readCelDocument; authoring.invalidate(); return this; },
     parseDocument: parseNotebookDocument,
     validate(source) { return authoring.validate(source); },
     complete(source, position, explicit) { return authoring.complete(source, position, explicit); },
@@ -427,6 +430,7 @@ export function createRixNotebookEngine(configuration = {}) {
   };
   const authoring = createNotebookAuthoringService({ parseDocument: parseNotebookDocument, getCatalog() {
     const context = createDefaultSystemContext({ pluginCatalog: engine.pluginCatalog });
+    registerNotebookCel(context, {}, engine, {});
     return { entries: context.getAllNames().map((name) => ({ name, kind: "function", source: "rix-system", documentation: context.get(name)?.doc || "RiX system capability" })), plugins: engine.pluginCatalog?.list() || [] };
   } });
   return assertNotebookEngine(engine);

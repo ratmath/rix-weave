@@ -1,3 +1,4 @@
+import { createNotebookCelReader } from "../notebook-web/cel-reader.js";
 import { notebookExportCapabilities, updateExportCapabilityNotice } from "../notebook-web/export-capabilities.js";
 import { renderGraphicSvg, formatValue } from "../../../../rix/src/index.js";
 import { visitPublicationTree } from "../../../../rix/src/runtime/publication-plan.js";
@@ -101,7 +102,10 @@ async function persist(source) {
     catch { elements.status.textContent = "Could not save browser recovery copy"; }
   }, 500);
 }
-const engine = createRixNotebookEngine({ taskWorkerPool: createNotebookTaskWorkers(), ownsTaskWorkerPool: true, pluginCatalog: createNotebookBundledPluginCatalog() });
+function celReaderForNote(notePath = activePath) {
+  return createNotebookCelReader({ store, notePath, root: workspaceKind === "single" ? null : exportRoot(), host: "browser Notebook" });
+}
+const engine = createRixNotebookEngine({ readCelDocument: (path, options) => celReaderForNote()(path, options), taskWorkerPool: createNotebookTaskWorkers(), ownsTaskWorkerPool: true, pluginCatalog: createNotebookBundledPluginCatalog() });
 const notebook = mountNotebookWeb({
   engine, elements, initialDocument: starter,
   host: { resolveAsset, onDocumentChange(source) { store.writeText(activePath, source); persist(source); } },
@@ -293,7 +297,7 @@ function staticHtml(titleText, source) {
 }
 async function buildStaticExport({ scope, notebookPath, targets, profileName = null }) {
   if (profileName) {
-    const result = await buildNotebookPublication({ notes: exportNotePaths(scope, notebookPath).filter(Boolean), store, engine, root: exportRoot(), title: projectManager?.project.title || archiveLabel(), profile: projectManager.exportProfile(profileName, notebookPath), profileName, renderHtml: staticHtml });
+    const result = await buildNotebookPublication({ notes: exportNotePaths(scope, notebookPath).filter(Boolean), store, engine, readCelDocumentForNote: celReaderForNote, root: exportRoot(), title: projectManager?.project.title || archiveLabel(), profile: projectManager.exportProfile(profileName, notebookPath), profileName, renderHtml: staticHtml });
     if (!result.ok) throw new Error(result.manifest.diagnostics.map(item => item.message).join("; "));
     return new BrowserDocumentStore([...result.files]);
   }
@@ -302,7 +306,7 @@ async function buildStaticExport({ scope, notebookPath, targets, profileName = n
   const roots = { markdown: "/markdown", html: "/html", quarto: "/quarto" };
   for (const notePath of notes) {
     const relative = relativeExportPath(notePath);
-    let run = await engine.executeDocumentAsync(await store.readText(notePath), { mode: "static", isolated: true, sliderOverrides: new Map() });
+    let run = await engine.executeDocumentAsync(await store.readText(notePath), { mode: "static", isolated: true, sliderOverrides: new Map(), readCelDocument: celReaderForNote(notePath) });
     try {
     run = await bundleNotebookRun(run, { store: createNotebookAssetStore(store, { directory: dirname(notePath) }) });
     const graphics = new Map(), graphicFiles = new Map();
