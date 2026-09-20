@@ -50,6 +50,9 @@
             1,
             1
           ]
+        },
+        "cube": {
+          "source": ".Shaped.Generate({: 2,2,2 }, idx -> grid[1,1]+idx[1]+10*idx[2]+100*idx[3])"
         }
       },
       "imports": {}

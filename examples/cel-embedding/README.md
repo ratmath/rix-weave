@@ -9,6 +9,13 @@ The editable sales sheet and its `View("subtotal")` share one handle; changing
 cell `[1,1]` updates both. The report example uses a second, independent handle
 and demonstrates the saved workbook's cross-sheet import and named export.
 
+The final section shows a reactive, read-only plane of the named `cube` export,
+then explicitly copies that plane into empty sales slots. The copy stays
+fixed after subtotal edits. A named region and decimal block format decorate
+that snapshot while preserving exact values. Repeating materialization in the
+same session diagnoses occupied destinations; rerunning starts from the saved
+empty destination again.
+
 Edits are session-local. Copy the JSON from `sales.Record()` into a `.rixbook`
 file to preserve them. Reopening/rerunning creates fresh handles from saved data.
 Static Markdown, HTML, and Quarto exports keep rendered values. Live HTML using

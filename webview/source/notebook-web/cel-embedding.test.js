@@ -84,3 +84,54 @@ test('inline data rejects executable/accessor syntax and limits session acquisit
   expect(run.outputStatements.at(-1).content).toContain('16 embedded sessions');
   await disposeNotebookRun(run); await host.dispose();
 });
+
+test('tensor snapshots select finite planes atomically and readonly exports follow workbook edits', async () => {
+  const document = appendRixCelEvent(createRixCelDocument({ id:'data', shape:[4,4] }), { type:'slot:set', index:[1,1], source:'1/3' });
+  const json = JSON.stringify(createRixCelWorkbookDocument([{ document, exports:{ cube:{ source:'.Shaped.Generate({: 2,2,2 }, idx -> grid[1,1]+idx[1]+10*idx[2]+100*idx[3])' } } }]));
+  const host = engine();
+  const run = await host.executeDocumentAsync(notebook(embed(json) + 'b.TensorView(:cube, {= slice=[_,_,2] });'));
+  expect(run.outputStatements.filter(s => s.kind === 'error').map(s => s.content)).toEqual([]);
+  const statement = run.outputStatements.at(-1), initial = run.runs[0].liveOutput.value;
+  expect(formatValue(initial.cells[0][0].value)).toBe('211..1/3');
+  expect(initial.formulaSheet).toBeNull();
+  expect(() => createWidgetSession(initial)).toThrow('requires a Binding or FormulaSheet');
+  const firstPlane = parseAndEvaluate('b.TensorView(:cube,{= slice=[_,_,1] });',run.runtime);
+  expect(formatValue(firstPlane.cells[0][0].value)).toBe('111..1/3');
+  const updates = []; statement.observed.observe(value => updates.push(value));
+  parseAndEvaluate('b.Set([1,1],"2/3");', run.runtime);
+  expect(formatValue(updates.at(-1).cells[0][0].value)).toBe('211..2/3');
+  parseAndEvaluate('b.Materialize(:cube, {= slice=[_,_,1], targetstart=[2,2] });', run.runtime);
+  const record = parseAndEvaluate('b.Record();', run.runtime).value;
+  const opened = createNotebookCelSession(record);
+  expect(formatValue(opened.book.sheet('data').get([2,2]))).toBe('111..2/3');
+  opened.dispose();
+  expect(() => parseAndEvaluate('b.Materialize(:cube, {= targetstart=[2,2] });', run.runtime)).toThrow(/collision/i);
+  expect(parseAndEvaluate('b.Record();', run.runtime).value).toBe(record);
+  expect(() => parseAndEvaluate('b.Materialize(:cube, {= targetstart=[4,4] });', run.runtime)).toThrow();
+  expect(() => parseAndEvaluate('b.Materialize(:cube, {= slice=[_,_,3] });', run.runtime)).toThrow();
+  expect(parseAndEvaluate('b.Record();', run.runtime).value).toBe(record);
+  parseAndEvaluate('b.Set([1,1],"1");', run.runtime);
+  const saved = createNotebookCelSession(parseAndEvaluate('b.Record();', run.runtime).value);
+  expect(formatValue(saved.book.sheet('data').get([2,2]))).toBe('111..2/3');
+  saved.dispose();
+  const count = updates.length; await host.dispose();
+  expect(updates.length).toBe(count);
+});
+
+test('Notebook rank-N regions and format layers roundtrip without changing coordinates or values', async () => {
+  const host = engine();
+  const run = await host.executeDocumentAsync(notebook(embed(fixture('1/3',[2,2,2])) + 'b.Region(:selected,[1,1,2],[2,2,2]); b.Format([1,1,2],[2,2,2],{= background="#f0f0ff", bold=1, numberFormat=:decimal, precision=2 }); b.Sheet({= slice=[_,_,2] });'));
+  expect(run.outputStatements.some(s => s.kind === 'error')).toBe(false);
+  const saved = parseAndEvaluate('b.Record();', run.runtime).value;
+  const reopened = createNotebookCelSession(saved);
+  expect(reopened.book.sheet('data').documentView.regions.selected).toEqual({start:[1,1,2],end:[2,2,2]});
+  expect(formatValue(reopened.book.sheet('data').get([1,1,1]))).toBe('1/3');
+  reopened.dispose();
+  expect(() => parseAndEvaluate('b.Region(:broken,[1,1],[2,2]);',run.runtime)).toThrow();
+  expect(() => parseAndEvaluate('b.Format([1,1,2],[2,2,2],{= background="url(evil)" });',run.runtime)).toThrow();
+  expect(parseAndEvaluate('b.Record();',run.runtime).value).toBe(saved);
+  parseAndEvaluate('b.Region(:selected,_,_);',run.runtime);
+  const removed = createNotebookCelSession(parseAndEvaluate('b.Record();',run.runtime).value);
+  expect(removed.book.sheet('data').documentView.regions.selected).toBeUndefined();
+  removed.dispose(); await host.dispose();
+});

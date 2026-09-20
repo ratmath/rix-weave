@@ -429,6 +429,25 @@ reader. Both constructors return an independent session handle:
 - `book.View("subtotal")` renders a named export and observes edits on that handle.
 - `book.Get("subtotal")` reads its exact current value for a calculation.
 - `book.Set([1,1], "7/3")` commits a source edit through workbook validation.
+- `book.TensorView("cube", {= viewaxes=[1,2], slice=[_,_,2] })` displays
+  one finite plane of a named Shaped/Matrix/Tensor export. It is read-only and
+  refreshes when that workbook changes; hidden axes are fixed by `slice`.
+- `book.Materialize("cube", {= slice=[_,_,2], targetstart=[2,1] })` copies
+  exact values into empty formula slots in one atomic edit. The first argument
+  can also be a Shaped/Matrix/Tensor value. `targetaxes` selects destination axes;
+  `targetstart` contains one coordinate per destination axis. A collision,
+  invalid plane or shape mismatch leaves the workbook unchanged. Snapshot values
+  remain fixed after source edits. Each full selected plane is limited to 4096
+  cells; automatic spilling and resizing are not implied.
+- `book.Region("results", [1,1], [3,2])` names inclusive rank-N bounds without
+  creating formula names or changing numeric addresses. Pass `_` for both bounds
+  to remove the name.
+- `book.Format([1,1], [3,2], {= background="#eef3ff", bold=1,
+  numberFormat=:decimal, precision=3 })` adds a format layer for inclusive rank-N
+  bounds. Styles support `bold`/`italic` (1 or 0), hex `color`/`background`,
+  `align` (`left`, `center`, `right`) and `numberFormat` (`exact`, `decimal`).
+  Precision is 0–20. `_` clears an individual style property. Display rounding
+  never changes exact values or addresses.
 - `book.Record()` returns JSON for an explicit save; edits never write back to disk.
 - `book.Dispose()` releases the handle early. Rerunning or closing the notebook
   also disposes its embedded workbooks and subscriptions.

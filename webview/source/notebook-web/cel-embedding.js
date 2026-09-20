@@ -2,6 +2,7 @@ import { Integer } from '@ratmath/core';
 import { createRixCelWorkbookHost } from '../../../../rix/src/eval/rixcel-host.js';
 import { parseRixCelDocument } from '../../../../rix/src/runtime/rixcel-document.js';
 import { createRixCelWorkbookDocument, parseRixCelWorkbook } from '../../../../rix/src/runtime/rixcel-workbook.js';
+import { createRixCelTensorSheet, materializeRixCelTensorPlane } from '../../../../rix/src/runtime/rixcel-tensor.js';
 import { createSheet, createText, isOutputValue } from '../../../../rix/src/runtime/output.js';
 import { formatValue } from '../../../../rix/src/eval/format.js';
 import { registerAsyncResource } from '../../../../rix/src/runtime/async-runtime.js';
@@ -22,6 +23,26 @@ const index = value => {
   if (!Array.isArray(value?.values)) fail('index must be an Array or Tuple');
   return value.values.map(item => integer(item, 'coordinate'));
 };
+
+// Only inert option data crosses into document operations.
+function plain(value) {
+  if (value instanceof Integer) return Number(value.value);
+  if (value?.type === 'string') return value.value;
+  if (Array.isArray(value?.values)) return value.values.map(plain);
+  if (value?.type === 'map') return Object.fromEntries([...value.entries].map(([key, entry]) => [key, plain(entry)]));
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  fail('options must contain only maps, arrays, text, integers or null');
+}
+function tensorOptions(value) {
+  if (value === null) return {};
+  if (value?.type !== 'map') fail('tensor options must be a Map');
+  const keys = { viewaxes:'viewAxes', slice:'slice', targetstart:'targetStart', targetaxes:'targetAxes' };
+  return Object.fromEntries([...value.entries].map(([key, entry]) => {
+    const normalized = keys[key.toLowerCase()];
+    if (!normalized) fail(`unknown tensor option: ${key}`);
+    return [normalized, plain(entry)];
+  }));
+}
 
 /** A private workbook session: no formula inherits the notebook's context or grants. */
 export function createNotebookCelSession(source, documentId = null) {
@@ -77,6 +98,35 @@ export function createNotebookCelSession(source, documentId = null) {
   method('Get', ([name], context) => { name = string(name, 'export name'); return observe(`get:${name}`, () => book.get(id, name), context); });
   method('View', ([name], context) => { name = string(name, 'export name'); return observe(`view:${name}`, () => { const value = book.get(id, name); return isOutputValue(value) ? value : createText([text(formatValue(value))]); }, context); });
   method('Set', ([at, source]) => { view.setFormulaSource(index(at), string(source, 'formula source')); return null; });
+  method('Region', ([name, start, end]) => {
+    book.edit(id, { type:'view:region', name:string(name, 'region name'), start:start === null ? null : index(start), end:end === null ? null : index(end) });
+    return null;
+  });
+  method('Format', ([start, end, style]) => {
+    if (style?.type !== 'map') fail('format style must be a Map');
+    const keys = { numberformat:'numberFormat' };
+    const normalized = Object.fromEntries([...style.entries].map(([key, value]) => {
+      key = keys[key.toLowerCase()] ?? key;
+      let scalar = plain(value);
+      if (['bold','italic'].includes(key) && [0,1].includes(scalar)) scalar = scalar === 1;
+      return [key, scalar];
+    }));
+    book.edit(id, { type:'view:format', start:index(start), end:index(end), style:normalized });
+    return null;
+  });
+  method('Materialize', ([tensor, options = null]) => {
+    const value = tensor?.type === 'string' ? book.get(id, string(tensor, 'export name')) : tensor;
+    const document = book.export().documents.find(entry => entry.document.id === id).document;
+    const candidate = materializeRixCelTensorPlane(document, value, tensorOptions(options));
+    book.transaction([{ id, document: candidate.document }]);
+    return null;
+  });
+  method('TensorView', ([name, options = null], context) => {
+    name = string(name, 'export name');
+    const selected = tensorOptions(options);
+    if (selected.targetStart || selected.targetAxes) fail('TensorView accepts only viewaxes and slice');
+    return observe(`tensor:${name}:${JSON.stringify(selected)}`, () => createRixCelTensorSheet(book.get(id, name), selected), context);
+  });
   method('Record', () => text(JSON.stringify(book.export(), null, 2)));
   method('Dispose', () => { book.dispose(); observations.clear(); return null; });
   const handle = { type: 'map', entries: new Map([['document', text(id)]]), _ext: methods };
@@ -95,7 +145,7 @@ export function registerNotebookCel(systemContext, runtime, engine, options) {
   systemContext.registerHost('cel', {
     groups: ['Output'],
     impl: ([source, document], context) => acquire(string(source, 'workbook JSON'), document, context),
-    doc: 'Embed inert .rixcel/.rixbook JSON in a private exact workbook. Sheet, Get/View named exports, Set, Record and Dispose are explicit session operations.',
+    doc: 'Embed inert .rixcel/.rixbook JSON in a private exact workbook. Sheet, Get/View named exports, TensorView, Materialize, Format/Region, Set, Record and Dispose are explicit session operations.',
   });
   systemContext.registerHost('celOpen', {
     groups: ['Output', 'Files'],
