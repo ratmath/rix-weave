@@ -1,5 +1,7 @@
+import { notebookMarkdownReferences } from "./document-references.js";
+import { notebookCompletionSource, notebookHoverSource } from "./authoring.js";
 import { EditorState, Transaction } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, hoverTooltip } from "@codemirror/view";
 import { autocompletion } from "@codemirror/autocomplete";
 import { linter } from "@codemirror/lint";
 import { basicSetup } from "codemirror";
@@ -18,7 +20,7 @@ import {
 } from "../../../../rix/src/index.js";
 import { rixHighlighting, rixLanguage } from "../../../../rix/src/tools/codemirror/index.js";
 import { assertNotebookEngine, createNotebookHost } from "../../../docshell/src/contracts.js";
-import { disposeNotebookRun, isInRixCell, parseFenceMetadata, whiteboardSourceNamespace } from "./rix-engine.js";
+import { disposeNotebookRun, parseFenceMetadata, whiteboardSourceNamespace } from "./rix-engine.js";
 
 export function publicationOutputHtml(run) {
   if (!run?.liveOutput) return "";
@@ -40,6 +42,7 @@ export function mountNotebookWeb({ engine, elements, host: callbacks, initialDoc
     sliderControlList, runButton, toggleRightPaneButton, status, rightPaneTitle,
   } = elements;
   const renderer = new MarkdownIt({ html: false, linkify: true, typographer: true });
+  renderer.use(notebookMarkdownReferences);
   const defaultFence = renderer.renderer.rules.fence;
   const defaultImage = renderer.renderer.rules.image;
   let currentRun = null;
@@ -139,7 +142,7 @@ export function mountNotebookWeb({ engine, elements, host: callbacks, initialDoc
       item.append(line, source, result);
       item.addEventListener("click", (event) => {
         if (event.target.closest("a, button, input, select, textarea, summary, details, canvas, svg, [data-rix-drag-target], [data-rix-graphic-action], [data-rix-geometry-object], td[data-rix-address]")) return;
-        api.jumpToLine(statement.line);
+        statement.diagnostic ? api.jumpToPosition(statement.diagnostic.from) : api.jumpToPosition(statement.position);
       });
       output.append(item);
     }
@@ -201,7 +204,8 @@ export function mountNotebookWeb({ engine, elements, host: callbacks, initialDoc
   const view = new EditorView({
     state: EditorState.create({ doc: initialDocument, extensions: [
       basicSetup, markdown({ codeLanguages: (info) => /^rix(?:\s|$)/i.test(info) ? rixLanguage : null }), rixHighlighting,
-      autocompletion({ override: [(context) => { const source = context.state.doc.toString(); if (!isInRixCell(source, context.pos)) return null; const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*/); return { from: word?.from ?? context.pos, options: engine.getCompletions() }; }] }),
+      autocompletion({ override: [notebookCompletionSource(engine)] }),
+      hoverTooltip(notebookHoverSource(engine)),
       linter((viewState) => engine.validate(viewState.state.doc.toString()), { delay: 350 }),
       EditorView.updateListener.of((update) => { if (!update.docChanged || applying) return; host.onDocumentChange(update.state.doc.toString()); scheduleRun(); }),
     ] }), parent: editorHost,
@@ -209,8 +213,10 @@ export function mountNotebookWeb({ engine, elements, host: callbacks, initialDoc
   const api = {
     get editor() { return view; }, get document() { return view.state.doc.toString(); }, get lastRun() { return currentRun; },
     setDocument(source) { applying = true; view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } }); applying = false; sliderOverrides.clear(); return run(); },
-    jumpToLine(line) { const target = view.state.doc.line(Math.min(line, view.state.doc.lines)); view.dispatch({ selection: { anchor: target.from }, scrollIntoView: true }); view.focus(); },
-    run, scheduleRun, validate() { return engine.validate(view.state.doc.toString()); }, setRightPane, toggleRightPane() { setRightPane(rightPane === "preview" ? "results" : "preview"); }, destroy() { destroyed = true; runGeneration++; window.clearTimeout(delayedRun); disposeWidgets(); disposeNotebookRun(currentRun); engine.dispose?.(); view.destroy(); },
+    jumpToLine(line) { const target = view.state.doc.line(Math.max(1, Math.min(line, view.state.doc.lines))); view.dispatch({ selection: { anchor: target.from }, scrollIntoView: true }); view.focus(); },
+    jumpToPosition(position) { view.dispatch({ selection: { anchor: Math.max(0, Math.min(position, view.state.doc.length)) }, scrollIntoView: true }); view.focus(); },
+    run, scheduleRun, validate() { return engine.validate(view.state.doc.toString()); }, setRightPane, toggleRightPane() { setRightPane(rightPane === "preview" ? "results" : "preview"); }, async destroy() { if (destroyed) return; destroyed = true; runGeneration++; window.clearTimeout(delayedRun); disposeWidgets(); runButton?.removeEventListener("click", onRun); toggleRightPaneButton?.removeEventListener("click", onToggle); view.destroy(); await disposeNotebookRun(currentRun); await engine.dispose?.(); },
   };
-  runButton?.addEventListener("click", () => { run().catch(() => {}); }); toggleRightPaneButton?.addEventListener("click", () => api.toggleRightPane()); setRightPane("results"); run().catch(() => {}); return api;
+  const onRun = () => { run().catch(() => {}); }; const onToggle = () => api.toggleRightPane();
+  runButton?.addEventListener("click", onRun); toggleRightPaneButton?.addEventListener("click", onToggle); setRightPane("results"); run().catch(() => {}); return api;
 }

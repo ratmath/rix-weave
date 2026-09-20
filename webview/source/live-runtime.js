@@ -1,23 +1,16 @@
+import { createLiveNotebookEngine, liveSourceDocument } from "./notebook-web/live-document.js";
+import { disposeNotebookRun } from "./notebook-web/rix-engine.js";
 import { relocateLivePublicationAssets } from "../../../rix/src/runtime/live-publication.js";
-import { Integer, Rational, RationalInterval } from "@ratmath/core";
 import renderMathInElement from "katex/contrib/auto-render";
 import outputWidgetStyles from "../../../rix/styles/output-widgets.css?inline";
 import {
-  Context,
-  createDefaultRegistry,
-  createDefaultSystemContext,
-  evaluate,
-  evaluateObserved,
   formatValue,
   isOutputValue,
-  lower,
   mountOutputWidgets,
-  parse,
   parseAndEvaluate,
   renderOutputHtml,
 } from "../../../rix/src/index.js";
 import { gridLatex } from "./output-latex.js";
-import { createNotebookBundledPluginCatalog } from "./bundled-plugin-catalog.js";
 
 const payloadElement = document.querySelector("#rix-live-document");
 const sourceCellElements = [...document.querySelectorAll("[data-rix-source-cell]")];
@@ -27,12 +20,20 @@ if (payloadElement || sourceCellElements.length) {
   const controls = document.querySelector("#rix-live-controls");
   const sliderOverrides = new Map();
   let widgetDisposers = [];
-  let observedResults = [];
+  const engine = createLiveNotebookEngine();
+  let generation = 0;
+  let closed = false;
+  const extracted = payload ? null : liveSourceDocument(sourceCellElements.map((element, position) => ({
+    index: Number(element.dataset.rixCell ?? position), header: element.dataset.rixHeader || "",
+    code: (element.matches("code") ? element : element.querySelector("code"))?.textContent || "",
+  })));
+  const source = payload?.source ?? extracted.source;
+  window.addEventListener("pagehide", () => { closed = true; generation++; for (const dispose of widgetDisposers.splice(0)) dispose(); engine.dispose(); }, { once: true });
 
   installStyles();
   document.documentElement.classList.add("rix-live-ready");
   hideRuntimeSources();
-  run();
+  run().catch(reportFailure);
 
   function hideRuntimeSources() {
     for (const sourceCell of sourceCellElements) {
@@ -41,212 +42,34 @@ if (payloadElement || sourceCellElements.length) {
     }
   }
 
-  function extractCells(source) {
-    const pattern = /^```rix(?:[ \t]+([^\n]*))?[ \t]*\n([\s\S]*?)^```[ \t]*$/gim;
-    const cells = [];
-    let match;
-    let index = 0;
-    while ((match = pattern.exec(source)) !== null) {
-      cells.push({ index, code: match[2], metadata: parseMetadata(match[1] || "") });
-      index += 1;
+  function showInitial(initial, visible) {
+    initial.hidden = !visible;
+    for (const element of initial.querySelectorAll(visible ? "[data-rix-original-id]" : "[id]")) {
+      if (visible) { element.id = element.dataset.rixOriginalId; delete element.dataset.rixOriginalId; }
+      else { element.dataset.rixOriginalId = element.id; element.removeAttribute("id"); }
     }
-    return cells;
   }
 
-  function extractSourceCells(elements) {
-    return elements.map((element, position) => ({
-      index: Number(element.dataset.rixCell ?? position),
-      code: (element.matches("code") ? element : element.querySelector("code"))?.textContent || "",
-      metadata: parseMetadata(element.dataset.rixHeader || ""),
-    })).sort((left, right) => left.index - right.index);
+  function reportFailure(error) {
+    if (closed || error?.name === "AbortError") return;
+    for (const initial of document.querySelectorAll("[data-rix-initial-cell]")) showInitial(initial, true);
+    if (controls) { controls.hidden = false; controls.textContent = `Live notebook: ${error.message || error}. The static result remains available.`; }
   }
 
-  function parseMetadata(header) {
-    const tokens = header.trim().split(/\s+/).filter(Boolean).map((token) => token.toLowerCase());
-    const role = tokens.includes("set") ? "set" : tokens.includes("edu") ? "edu" : "out";
-    return {
-      role,
-      execution: tokens.includes("singleton") ? "singleton" : tokens.includes("refresh") ? "refresh" : "flow",
-      showCode: role === "edu",
-      showOutput: role !== "set",
-    };
-  }
-
-  function asRational(value, label) {
-    if (value instanceof Rational) return value;
-    if (value instanceof Integer) return new Rational(value);
-    throw new Error(`${label} must be an exact RiX number`);
-  }
-
-  function inferSlider(args) {
-    let interval = new RationalInterval(-10, 10);
-    let start = null;
-    let step = null;
-    let steps = null;
-    if (args.length === 1 && args[0]?.type === "map") {
-      const entries = args[0].entries;
-      interval = entries.get("interval") || interval;
-      start = entries.has("start") ? asRational(entries.get("start"), "Slider start") : null;
-      if (entries.has("step") && entries.has("steps")) throw new Error("Slider accepts either step or steps, not both");
-      if (entries.has("step")) step = asRational(entries.get("step"), "Slider step");
-      if (entries.has("steps")) steps = Number(asRational(entries.get("steps"), "Slider steps").numerator);
-    } else {
-      if (args.length > 3) throw new Error("Slider accepts interval, step-or-steps, and start");
-      if (args[0] !== undefined) interval = args[0];
-      if (!(interval instanceof RationalInterval)) throw new Error("Slider interval must be a RiX interval such as 1:5");
-      if (args[1] !== undefined) {
-        const second = asRational(args[1], "Slider step-or-steps");
-        if (second.numerator === 0n) throw new Error("Slider step-or-steps cannot be zero");
-        if (second.denominator === 1n && second.numerator >= 3n) steps = Number(second.numerator);
-        else step = second;
-      }
-      if (args[2] !== undefined) start = asRational(args[2], "Slider start");
-    }
-    if (!Number.isSafeInteger(steps) && steps !== null) throw new Error("Slider steps must be a safe integer");
-    const low = interval.low;
-    const high = interval.high;
-    const span = high.subtract(low);
-    if (step) {
-      if (step.numerator < 0n) step = step.negate();
-      steps = Math.floor(span.toNumber() / step.toNumber());
-    } else {
-      steps ??= 20;
-      step = span.divide(new Integer(BigInt(steps)));
-    }
-    if (!Number.isFinite(steps) || steps < 1 || steps > 10000) throw new Error("Slider must have between 1 and 10000 steps");
-    start ??= low.add(high).divide(new Integer(2));
-    const startIndex = Math.max(0, Math.min(steps, Math.round((start.toNumber() - low.toNumber()) / step.toNumber())));
-    return { low, step, steps, startIndex };
-  }
-
-  function makeRuntime(sliders) {
-    const registry = createDefaultRegistry();
-    const pluginCatalog = createNotebookBundledPluginCatalog();
-    const runtime = {
-      registry,
-      context: new Context(),
-      systemContext: null,
-      currentCell: 0,
-      sliderCount: 0,
-      currentSliderName: null,
-      currentPublication: null,
-    };
-    const systemContext = createDefaultSystemContext({ frozen: false, pluginCatalog });
-    systemContext.registerHost("slider", {
-      impl(args) {
-        const config = inferSlider(args);
-        const id = `${runtime.currentCell}:${runtime.sliderCount++}`;
-        const index = Math.max(0, Math.min(config.steps, sliderOverrides.get(id) ?? config.startIndex));
-        const value = config.low.add(config.step.multiply(new Integer(BigInt(index))));
-        sliders.push({ ...config, id, index, value, name: runtime.currentSliderName || "Parameter" });
-        return value;
-      },
-      doc: "RiX Notebook live slider",
-    });
-    const modeBlock = (mode) => ({
-      lazy: true,
-      impl(args, context, evaluate) {
-        if (args.length > 1) throw new Error(`.${mode} accepts at most one block`);
-        if (args.length === 1 && mode === "live") context.withSharedBody(args[0], () => evaluate(args[0]));
-        return null;
-      },
-    });
-    systemContext.registerHost("static", modeBlock("static"));
-    systemContext.registerHost("live", modeBlock("live"));
-    const outputCommand = (channel) => ({
-      lazy: true,
-      impl(args, _context, evaluate) {
-        if (args.length > 1) throw new Error(`.${channel} accepts zero or one argument`);
-        if (!runtime.currentPublication) throw new Error(`.${channel} may only be used while running a notebook cell`);
-        const target = channel === "out" ? "out" : channel === "staticout" ? "static" : "live";
-        if (target !== "out" && target !== "live") return null;
-        if (runtime.currentPublication[target].declared) throw new Error(`.${channel} may only be used once per cell`);
-        runtime.currentPublication[target] = { declared: true, suppressed: args.length === 0, value: args.length === 0 ? null : evaluate(args[0]) };
-        return null;
-      },
-    });
-    systemContext.registerHost("out", outputCommand("out"));
-    systemContext.registerHost("staticOut", outputCommand("staticout"));
-    systemContext.registerHost("liveOut", outputCommand("liveout"));
-    runtime.loadRixPlugin = ({ source, sourcePath, context, registry: pluginRegistry, systemContext: pluginSystemContext }) => (
-      parseAndEvaluate(source, {
-        context,
-        registry: pluginRegistry,
-        systemContext: pluginSystemContext,
-        file: sourcePath,
-      })
-    );
-    systemContext.freeze();
-    runtime.systemContext = systemContext;
-    return runtime;
-  }
-
-  function executeCell(cell, runtime) {
-    const context = cell.metadata.execution === "singleton"
-      ? new Context()
-      : cell.metadata.execution === "refresh" ? (runtime.context = new Context()) : runtime.context;
-    context.setEnv("__system_context__", runtime.systemContext);
-    context.setEnv("__registry__", runtime.registry);
-    context.setEnv("__source__", cell.code);
-    context.setEnv("__plugin_load_rix__", runtime.loadRixPlugin);
-    runtime.currentCell = cell.index;
-    const results = [];
-    let implicitOutput = { available: false, value: null };
-    runtime.currentPublication = {
-      out: { declared: false, suppressed: false, value: null },
-      static: { declared: false, suppressed: false, value: null },
-      live: { declared: false, suppressed: false, value: null },
-    };
-    for (const node of lower(parse(cell.code))) {
-      try {
-        runtime.currentSliderName = sourceNameForNode(cell.code, results.length);
-        const hostCommand = node.fn === "SYS_CALL" && ["static", "live", "out", "staticout", "liveout"].includes(String(node.args?.[0] || ""));
-        const command = String(node.args?.[0] || "").toLowerCase();
-        const publicationTarget = command === "out" ? "out" : command === "liveout" ? "live" : null;
-        const observed = evaluateObserved(node, context, runtime.registry, runtime.systemContext, publicationTarget ? {
-          selectValue: (value) => runtime.currentPublication[publicationTarget]?.declared
-            ? runtime.currentPublication[publicationTarget].value
-            : value,
-        } : {});
-        observedResults.push(observed);
-        const value = observed.value;
-        results.push({ value, observed, error: null });
-        if (publicationTarget && runtime.currentPublication[publicationTarget]?.declared) runtime.currentPublication[publicationTarget].observed = observed;
-        if (!hostCommand) implicitOutput = { available: true, value, observed };
-        runtime.currentSliderName = null;
-      } catch (error) {
-        runtime.currentSliderName = null;
-        results.push({ value: null, error: error instanceof Error ? error.message : String(error) });
-        break;
-      }
-    }
-    const selected = runtime.currentPublication.live.declared
-      ? runtime.currentPublication.live
-      : runtime.currentPublication.out.declared ? runtime.currentPublication.out : implicitOutput;
-    const liveResult = selected.available === false || selected.suppressed
-      ? null
-      : { value: selected.value, observed: selected.observed || null, error: null };
-    runtime.currentPublication = null;
-    return { results, liveResult };
-  }
-
-  function sourceNameForNode(source, index) {
-    const statements = source.split(/;\s*(?:\n|$)/).filter(Boolean);
-    return statements[index]?.match(/^\s*([a-z][a-zA-Z0-9_]*)\s*:=\s*\.slider\s*\(/)?.[1] || "Parameter";
-  }
-
-  function run() {
-    for (const initial of document.querySelectorAll("[data-rix-initial-cell]")) initial.hidden = false;
+  async function run() {
+    const token = ++generation;
+    for (const initial of document.querySelectorAll("[data-rix-initial-cell]")) showInitial(initial, true);
     for (const dispose of widgetDisposers.splice(0)) dispose();
-    for (const observed of observedResults.splice(0)) observed.dispose?.();
-    const cells = payload ? extractCells(payload.source) : extractSourceCells(sourceCellElements);
-    const sliders = [];
-    const runtime = makeRuntime(sliders);
-    for (const cell of cells) {
-      const result = executeCell(cell, runtime);
-      if (cell.metadata.role !== "set" && document.querySelector(`[data-rix-live-cell="${cell.index}"]`)) renderWidget(cell, result, runtime);
+    for (const widget of document.querySelectorAll("[data-rix-live-cell]")) widget.replaceChildren();
+    const result = await engine.executeDocumentAsync(source, { mode: "live", sliderOverrides });
+    if (closed || token !== generation) { await disposeNotebookRun(result); return; }
+    for (const cellRun of result.runs) {
+      const cell = { ...cellRun.cell, index: extracted?.indices[cellRun.cell.index] ?? cellRun.cell.index };
+      const failure = cellRun.statements.find(statement => statement.kind === "error");
+      const liveResult = failure ? { error: failure.content } : cellRun.liveOutput ? { ...cellRun.liveOutput, error: null } : null;
+      if (cell.metadata.role !== "set") renderWidget(cell, { liveResult }, result.runtime);
     }
-    renderControls(sliders);
+    renderControls(result.sliders);
   }
 
   function renderWidget(cell, execution, runtime) {
@@ -257,7 +80,7 @@ if (payloadElement || sourceCellElements.length) {
       : widget.dataset.rixShowCode === "true";
     const code = showCode ? `<details class="rix-live-source"><summary>RiX code</summary><pre><code>${escapeLiveHtml(cell.code)}</code></pre></details>` : "";
     const result = execution.liveResult;
-    if (result && !result.error) { const initial = document.querySelector(`[data-rix-initial-cell="${cell.index}"]`); if (initial) initial.hidden = true; }
+    if (result && !result.error) { const initial = document.querySelector(`[data-rix-initial-cell="${cell.index}"]`); if (initial) showInitial(initial, false); }
     let output = "";
     if (cell.metadata.showOutput && result) {
       output = result.error
@@ -307,7 +130,7 @@ if (payloadElement || sourceCellElements.length) {
     if (value.kind === "grid") return `<div class="rix-live-math-grid">${gridLatex(value, formatValue)}</div>`;
     if (value.kind === "fragment") return value.children.map(renderLiveValue).join("");
     if (value.kind === "figure") {
-      return `<figure>${renderLiveValue(value.content)}${value.caption ? `<figcaption>${escapeLiveHtml(value.caption)}</figcaption>` : ""}</figure>`;
+      return `<figure${value.label ? ` id="${escapeLiveHtml(value.label)}"` : ""}>${renderLiveValue(value.content)}${value.caption ? `<figcaption>${escapeLiveHtml(value.caption)}</figcaption>` : ""}</figure>`;
     }
     if (value.kind === "slide") return `<section class="rix-live-slide">${value.title ? `<h2>${escapeLiveHtml(value.title)}</h2>` : ""}${renderLiveValue(value.content)}</section>`;
     if (value.kind === "slides") return value.slides.map(renderLiveValue).join("");
@@ -332,7 +155,7 @@ if (payloadElement || sourceCellElements.length) {
       value.textContent = formatValue(slider.value);
       input.addEventListener("input", () => {
         sliderOverrides.set(slider.id, Number(input.value));
-        run();
+        run().catch(reportFailure);
       });
       label.append(name, input, value);
       controls.append(label);
@@ -347,7 +170,7 @@ if (payloadElement || sourceCellElements.length) {
     if (document.querySelector("#rix-live-styles")) return;
     const style = document.createElement("style");
     style.id = "rix-live-styles";
-    style.textContent = `${outputWidgetStyles}\n.rix-live-ready .rix-static,.rix-live-ready .rix-runtime-source,.rix-live-ready [data-rix-source-cell]{display:none}.rix-live-controls{display:grid;gap:.55rem;margin:1rem 0;padding:.8rem;background:#f4f7fb;border:1px solid #cbd9e9;border-radius:6px}.rix-live-slider{display:grid;grid-template-columns:auto minmax(8rem,1fr) auto;align-items:center;gap:.65rem;font:14px system-ui,sans-serif}.rix-live-slider input{accent-color:#35557b}.rix-live-widget{margin:1rem 0}.rix-live-source summary{cursor:pointer;color:#35557b}.rix-live-source pre,.rix-live-output pre,.rix-live-error{overflow:auto;padding:.8rem;background:#f4f2ec;border-radius:5px}.rix-live-math-grid{overflow:auto;margin:1rem 0}.rix-live-error{color:#8a2520;background:#fbe9e7}.rix-live-output table{border-collapse:collapse}.rix-live-output .rix-output-table{display:inline-table!important;width:auto!important;max-width:100%;table-layout:auto}.rix-live-output th,.rix-live-output td{width:auto!important;padding:.3rem .5rem;border:1px solid #cfd8e5}.rix-live-output th{background:#edf3fa}.rix-live-output svg{display:block;max-width:100%;height:auto}.rix-output-sheet{display:inline-grid;max-width:100%;gap:.35rem;font-variant-numeric:tabular-nums}.rix-output-sheet-title{margin:0;font:600 14px system-ui,sans-serif}.rix-output-sheet-location{min-height:1.35em;color:#657080;font:12px system-ui,sans-serif}.rix-output-sheet-plane-controls{display:flex;flex-wrap:wrap;gap:.4rem .65rem;padding:.42rem .5rem;border:1px solid #dbe2ea;border-radius:4px;background:#f8fafc}.rix-output-sheet-plane-controls label{display:inline-flex;align-items:center;gap:.35rem;color:#486078;font:600 11px system-ui,sans-serif}.rix-output-sheet-plane-controls select{min-width:3rem;padding:.16rem .35rem;border:1px solid #b8c5d4;border-radius:4px;background:#fff;color:#28313c;font:inherit}.rix-output-sheet table{border:1px solid #cfd8e5;background:#fff}.rix-output-sheet th,.rix-output-sheet td{min-width:3.4rem;padding:.3rem .5rem;border:1px solid #dbe2ea;text-align:right;white-space:nowrap}.rix-output-sheet th{color:#486078;background:#edf3fa;font:600 12px system-ui,sans-serif}.rix-output-sheet td{cursor:cell;outline:0}.rix-output-sheet td:hover{background:#f5f8fc}.rix-output-sheet td:focus,.rix-output-sheet td.rix-sheet-cell-selected{background:#eef2ff;box-shadow:inset 0 0 0 2px #6366f1}`;
+    style.textContent = `${outputWidgetStyles}\n.rix-live-ready .rix-runtime-source,.rix-live-ready [data-rix-source-cell]{display:none}.rix-live-controls{display:grid;gap:.55rem;margin:1rem 0;padding:.8rem;background:#f4f7fb;border:1px solid #cbd9e9;border-radius:6px}.rix-live-slider{display:grid;grid-template-columns:auto minmax(8rem,1fr) auto;align-items:center;gap:.65rem;font:14px system-ui,sans-serif}.rix-live-slider input{accent-color:#35557b}.rix-live-widget{margin:1rem 0}.rix-live-source summary{cursor:pointer;color:#35557b}.rix-live-source pre,.rix-live-output pre,.rix-live-error{overflow:auto;padding:.8rem;background:#f4f2ec;border-radius:5px}.rix-live-math-grid{overflow:auto;margin:1rem 0}.rix-live-error{color:#8a2520;background:#fbe9e7}.rix-live-output table{border-collapse:collapse}.rix-live-output .rix-output-table{display:inline-table!important;width:auto!important;max-width:100%;table-layout:auto}.rix-live-output th,.rix-live-output td{width:auto!important;padding:.3rem .5rem;border:1px solid #cfd8e5}.rix-live-output th{background:#edf3fa}.rix-live-output svg{display:block;max-width:100%;height:auto}.rix-output-sheet{display:inline-grid;max-width:100%;gap:.35rem;font-variant-numeric:tabular-nums}.rix-output-sheet-title{margin:0;font:600 14px system-ui,sans-serif}.rix-output-sheet-location{min-height:1.35em;color:#657080;font:12px system-ui,sans-serif}.rix-output-sheet-plane-controls{display:flex;flex-wrap:wrap;gap:.4rem .65rem;padding:.42rem .5rem;border:1px solid #dbe2ea;border-radius:4px;background:#f8fafc}.rix-output-sheet-plane-controls label{display:inline-flex;align-items:center;gap:.35rem;color:#486078;font:600 11px system-ui,sans-serif}.rix-output-sheet-plane-controls select{min-width:3rem;padding:.16rem .35rem;border:1px solid #b8c5d4;border-radius:4px;background:#fff;color:#28313c;font:inherit}.rix-output-sheet table{border:1px solid #cfd8e5;background:#fff}.rix-output-sheet th,.rix-output-sheet td{min-width:3.4rem;padding:.3rem .5rem;border:1px solid #dbe2ea;text-align:right;white-space:nowrap}.rix-output-sheet th{color:#486078;background:#edf3fa;font:600 12px system-ui,sans-serif}.rix-output-sheet td{cursor:cell;outline:0}.rix-output-sheet td:hover{background:#f5f8fc}.rix-output-sheet td:focus,.rix-output-sheet td.rix-sheet-cell-selected{background:#eef2ff;box-shadow:inset 0 0 0 2px #6366f1}`;
     style.textContent += '.rix-output-sheet td[data-rix-state="error"]{position:relative;background:#fff1f2;box-shadow:inset 0 0 0 1px #e11d48}.rix-output-sheet td[data-rix-state="error"]::after{content:"!";position:absolute;top:1px;right:3px;color:#be123c;font:700 10px/1 system-ui,sans-serif}.rix-output-sheet td[data-rix-state="error"]:focus,.rix-output-sheet td[data-rix-state="error"].rix-sheet-cell-selected{background:#fff1f2;box-shadow:inset 0 0 0 2px #e11d48}';
     style.textContent += '.rix-output-drag-point{cursor:grab;outline:none;filter:drop-shadow(0 1px 2px rgb(15 23 42/.35))}.rix-output-drag-point:hover,.rix-output-drag-point:focus{stroke:#fff;stroke-width:3;filter:drop-shadow(0 0 4px #7c3aed)}.rix-output-drag-point-active{cursor:grabbing}.rix-output-graphic-status{display:block;margin-top:.3rem;color:#6d28d9;font:11px/1.35 system-ui,sans-serif}';
     document.head.append(style);

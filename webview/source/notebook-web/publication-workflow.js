@@ -1,3 +1,4 @@
+import { rewriteNotebookLinks, publicationNotePath, NOTE_EXTENSION } from "./document-references.js";
 /** Host-neutral Notebook profile builds. Complete results are committed by the host. */
 import { createPublicationProfile, PUBLICATION_MANIFEST_SCHEMA, PUBLICATION_TARGETS } from "../../../../rix/src/runtime/publication-workflow.js";
 import { safePublicationPath, visitPublicationTree, withPublicationPlan, quartoProjectYaml } from "../../../../rix/src/runtime/publication-plan.js";
@@ -27,7 +28,7 @@ export async function buildNotebookPublication({notes,store,engine,profile:optio
   for(const note of [...notes].sort())for(const[input,prelude]of Object.entries(profile.inputs)) {
     signal?.throwIfAborted();if(Date.now()-started>profile.maxBuildMs)throw new Error("Notebook publication build time budget exceeded");
     const relative=safePublicationPath(note.slice(root.length).replace(/^\//,"")||basename(note));
-    const id=relative.replace(/\.(md|markdown)$/i,"");const prefix=`${id}/${input}`;const artifacts=[];const jobDiagnostics=[];
+    const id=relative.replace(NOTE_EXTENSION,"");const prefix=`${id}/${input}`;const artifacts=[];const jobDiagnostics=[];
     let run;const jobStarted=Date.now();
     try {
       const sourceSize=store.files?.get(note)?.byteLength ?? store.files?.get(note)?.length;
@@ -56,14 +57,14 @@ export async function buildNotebookPublication({notes,store,engine,profile:optio
       for(const[path,data]of run.outputBundle.files)if(!files.has(`${prefix}/${path}`))put(`${prefix}/${path}`,data);
       const graphics=new Map();for(const cell of run.runs)visitPublicationTree(cell.staticOutput?.value,value=>{if(value.kind==="graphic")graphics.set(value,null);});
       for(const graphic of graphics.keys()){const svg=renderGraphicSvg(graphic,formatValue);const asset=`assets/${await digest(svg)}.svg`;graphics.set(graphic,asset);if(!files.has(`${prefix}/${asset}`))put(`${prefix}/${asset}`,svg);}
-      const markdown=renderStaticDocument(run.document,run.runs,run.inlineRuns,{graphicReference:value=>graphics.get(value)||formatValue(value)});
+      const renderedMarkdown=renderStaticDocument(run.document,run.runs,run.inlineRuns,{graphicReference:value=>graphics.get(value)||formatValue(value)});
       put(`${prefix}/source.rix-output.json`,run.outputBundleJSON);
-      for(const target of profile.targets){signal?.throwIfAborted();const filename=`${prefix}/document.${PUBLICATION_TARGETS[target]}`;
+      for(const target of profile.targets){signal?.throwIfAborted();const filename=`${prefix}/document.${PUBLICATION_TARGETS[target]}`;const destinations=new Map(notes.map(path=>[path,publicationNotePath(path,root,input,PUBLICATION_TARGETS[target])]));const markdown=rewriteNotebookLinks(renderedMarkdown,{note,destinations,diagnostics:jobDiagnostics});
         if(target==="markdown"||target==="text")put(filename,markdown);
         else if(target==="quarto"){put(filename,`---\ntitle: ${JSON.stringify(basename(note))}\nformat: ${profile.plan.profile==="slides"?"revealjs":"html"}\n---\n\n${markdown}`);pages.push({path:filename,title:`${basename(note)} (${input})`});}
         else if(target==="bundle")put(filename,run.outputBundleJSON);
         else if(target==="html"){
-          if(profile.live&&renderLiveHtml){const liveIndexes=new Set(run.runs.flatMap((cell,index)=>cell.metadata.role!=="set"?[index]:[]));const liveMarkdown=renderStaticDocument(run.document,run.runs,run.inlineRuns,{graphicReference:value=>graphics.get(value)||formatValue(value),liveCellPlaceholder:true,liveCellIndexes:liveIndexes});put(filename,await renderLiveHtml(basename(note),liveMarkdown,evaluatedSource,{assetPaths}));}
+          if(profile.live&&renderLiveHtml){const liveIndexes=new Set(run.runs.flatMap((cell,index)=>cell.metadata.role!=="set"?[index]:[]));const liveMarkdown=renderStaticDocument(run.document,run.runs,run.inlineRuns,{graphicReference:value=>graphics.get(value)||formatValue(value),liveCellPlaceholder:true,liveCellIndexes:liveIndexes});put(filename,await renderLiveHtml(basename(note),rewriteNotebookLinks(liveMarkdown,{note,destinations,diagnostics:jobDiagnostics}),evaluatedSource,{assetPaths}));}
           else {if(profile.live)jobDiagnostics.push({level:"warning",code:"notebook-live-unavailable",target,message:"This host exports the initial static result; use CLI live HTML or the native Notebook live exporter for interaction."});put(filename,await renderHtml(basename(note),markdown));}
           for(const[path,data]of extraAssets)if(!files.has(`${prefix}/${path}`))put(`${prefix}/${path}`,data);
         } else {const message=`${target} compilation is unavailable in Notebook. Use a CLI RiX publication build for native targets; complete rendered Markdown follows.`;jobDiagnostics.push({level:"warning",code:"notebook-target-unavailable",target,message});put(`${filename}.unavailable.txt`,`${message}\n\n${markdown}`);}

@@ -322,18 +322,39 @@ when Playwright or Chrome are installed outside this project).
 
 ## Remaining integration work
 
-Reconciled 2026-09-19. The umbrella `ratmath/WORK_PLAN.md` (O3–O7, H2,
-R2, C3) is the execution queue. Current CodeMirror editing and native live HTML
-export are delivered features, not future foundation work.
+Reconciled 2026-09-20. The umbrella `ratmath/WORK_PLAN.md` is the execution queue.
+H2 authoring and supported host exports are implemented. Remaining integration:
+embed RiXCel documents and their explicit named exports (C3), extend runnable
+tutorial coverage (H3), and refresh distributed bundles in the final release
+verification (Q1). Note references never execute the linked note.
 
-- Preserve cross-note figure labels/references and resolve target-specific
-  SVG/PNG assets through shared publication services.
-- Complete shared language-service completion/diagnostic integration in both
-  workbenches, retaining their intentional host differences.
-- Complete browser/native export capability parity where the host supports it,
-  with explicit static fallbacks elsewhere.
-- Embed RiXCel documents and explicit named exports after their module contract
-  is implemented; avoid implicit execution through note references.
+Both editors use the shared RiX language service for completion, hover help,
+syntax diagnostics and precise result/error navigation, including inline RiX.
+Completion follows flow, singleton and refresh contexts and reads plugin
+metadata without installing plugins. Authoring analysis is bounded to 1 MiB
+and 512 RiX segments; larger documents receive an explicit diagnostic.
+
+Exports preserve explicit figure/table labels and deterministic heading IDs.
+Links to included notes are rewritten for each target, retaining fragments and
+queries. Profile builds report links to omitted notes instead of inventing
+pages. Generated SVG and portable media assets travel with the publication.
+
+The export dialog describes the actual host capabilities. Browser files and
+ZIP projects produce static HTML, Markdown and Quarto source. Native Notebook
+also supplies local live HTML with static initial results. Live exports share
+the editor's async engine, cancellation and disposal. Filesystem access and
+native plugin grants stay behind native adapters. PDF/LaTeX compilation belongs
+to the CLI publication build; unsupported profile targets emit diagnostics and
+rendered source rather than claiming a successful compilation.
+
+`bun test webview/source/notebook-web` covers shared authoring, real-filesystem
+adapter and browser ZIP save/reopen, references/assets, static/live execution,
+missing assets/plugins/tools, and resource disposal. Native adapter tests inject
+the Tauri API; they do not automate the macOS permission dialog. For Chromium
+acceptance, build the browser and live runtime, then run
+`bun scripts/check-authoring-browser.js`. It checks editor completion/navigation
+and an exported live slider with a stable figure ID. Set `RIX_LIVE_BUNDLE` to
+test an isolated live build; the Playwright/Chrome overrides above also apply.
 
 ## Design notes
 

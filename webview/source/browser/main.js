@@ -1,3 +1,7 @@
+import { notebookExportCapabilities, updateExportCapabilityNotice } from "../notebook-web/export-capabilities.js";
+import { renderGraphicSvg, formatValue } from "../../../../rix/src/index.js";
+import { visitPublicationTree } from "../../../../rix/src/runtime/publication-plan.js";
+import { notebookMarkdownReferences, rewriteNotebookLinks, noteTargetPath } from "../notebook-web/document-references.js";
 import { createNotebookTaskWorkers } from "../notebook-web/task-workers.js";
 import { buildNotebookPublication } from "../notebook-web/publication-workflow.js";
 import { bundleNotebookRun, createNotebookAssetStore } from "../notebook-web/output-assets.js";
@@ -43,6 +47,8 @@ const workspace = document.querySelector(".workspace"); const sidebar = $("#brow
 let filename = "rix-notebook.md"; let activePath = "/rix-notebook.md"; let store = createSingleFileStore(filename, starter); let persistTimer = null; let saveHandle = null; let uploadedArchiveName = null;
 let workspaceKind = "single"; let projectManager = null;
 const htmlRenderer = new MarkdownIt({ html: false, linkify: true, typographer: true });
+
+htmlRenderer.use(notebookMarkdownReferences);
 
 function basename(path) { return path.split("/").filter(Boolean).at(-1) || "untitled.md"; }
 function dirname(path) { const parts = path.split("/").filter(Boolean); parts.pop(); return `/${parts.join("/")}` || "/"; }
@@ -299,15 +305,20 @@ async function buildStaticExport({ scope, notebookPath, targets, profileName = n
     let run = await engine.executeDocumentAsync(await store.readText(notePath), { mode: "static", isolated: true, sliderOverrides: new Map() });
     try {
     run = await bundleNotebookRun(run, { store: createNotebookAssetStore(store, { directory: dirname(notePath) }) });
-    const staticSource = renderStaticDocument(run.document, run.runs, run.inlineRuns);
+    const graphics = new Map(), graphicFiles = new Map();
+    for (const cell of run.runs) visitPublicationTree(cell.staticOutput?.value, value => { if (value.kind === "graphic") graphics.set(value, null); });
+    for (const graphic of graphics.keys()) { const path = `assets/figures/${basename(notePath)}-${graphicFiles.size + 1}.svg`; graphics.set(graphic, path); graphicFiles.set(path, renderGraphicSvg(graphic, formatValue)); }
+    const staticSource = renderStaticDocument(run.document, run.runs, run.inlineRuns, { graphicReference: value => graphics.get(value) });
+    const targetSource = target => rewriteNotebookLinks(staticSource, { note: notePath, destinations: new Map(notes.map(path => [path, noteTargetPath(relativeExportPath(path), target)])) });
     for (const [target, root] of Object.entries(roots)) if (targets[target]) {
       const parent = dirname(joinPath(root, relative));
+      for (const [path, bytes] of graphicFiles) output.set(joinPath(parent, path), bytes);
       for (const [path, bytes] of run.outputBundle.files) output.set(joinPath(parent, path), bytes);
       if (run.outputBundle.document.children.length) output.set(joinPath(parent, `${basename(notePath)}.rix-output.json`), run.outputBundleJSON);
     }
-    if (targets.markdown) output.set(joinPath(roots.markdown, relative), staticSource);
-    if (targets.html) output.set(joinPath(roots.html, relative.replace(/\.(?:md|markdown)$/i, ".html")), staticHtml(basename(notePath), staticSource));
-    if (targets.quarto) output.set(joinPath(roots.quarto, relative.replace(/\.(?:md|markdown)$/i, ".qmd")), staticSource);
+    if (targets.markdown) output.set(joinPath(roots.markdown, relative), targetSource("markdown"));
+    if (targets.html) output.set(joinPath(roots.html, relative.replace(/\.(?:md|markdown)$/i, ".html")), staticHtml(basename(notePath), targetSource("html")));
+    if (targets.quarto) output.set(joinPath(roots.quarto, relative.replace(/\.(?:md|markdown)$/i, ".qmd")), targetSource("quarto"));
     } finally { await disposeNotebookRun(run); }
   }
   for (const [path, value] of store.entries()) {
@@ -321,7 +332,7 @@ async function buildStaticExport({ scope, notebookPath, targets, profileName = n
 const exportProfile = $("#browser-export-profile");
 const exportDialog = $("#export-dialog"); const exportScope = $("#browser-export-scope"); const exportNotebook = $("#browser-export-notebook"); const exportNotebookLabel = $("#browser-export-notebook-label");
 const exportChecks = { markdown: $("#browser-export-markdown"), html: $("#browser-export-html"), quarto: $("#browser-export-quarto") };
-function updateProfileTargets() { for (const input of Object.values(exportChecks)) input.disabled = Boolean(exportProfile.value); }
+function updateProfileTargets() { for (const input of Object.values(exportChecks)) input.disabled = Boolean(exportProfile.value); updateExportCapabilityNotice(exportDialog, notebookExportCapabilities(), exportProfile.value ? projectManager?.exportProfile(exportProfile.value, exportNotebook.value) : null); }
 function updateBrowserExportScope() { const notebookScope = workspaceKind === "project" && exportScope.value === "notebook"; exportNotebook.hidden = !notebookScope; exportNotebookLabel.hidden = !notebookScope; }
 function openBrowserExportDialog() {
   exportNotebook.replaceChildren(); const project = workspaceKind === "project";

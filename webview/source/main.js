@@ -1,3 +1,6 @@
+import { notebookExportCapabilities, updateExportCapabilityNotice } from "./notebook-web/export-capabilities.js";
+import { notebookMarkdownReferences, rewriteNotebookLinks, noteTargetPath } from "./notebook-web/document-references.js";
+import { notebookCompletionSource, notebookHoverSource } from "./notebook-web/authoring.js";
 import { createNotebookTaskWorkers } from "./notebook-web/task-workers.js";
 import { buildNotebookPublication, replaceNotebookPublication } from "./notebook-web/publication-workflow.js";
 import { quartoProjectYaml as sharedQuartoProjectYaml } from "../../../rix/src/runtime/publication-plan.js";
@@ -19,15 +22,12 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { copyFile, exists, mkdir, rename, remove, readDir, open as openAssetFile, readTextFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { Integer } from "@ratmath/core";
 import {
-  createDefaultSystemContext,
   createGeometryAuthoringProgram,
   encodeGeometryConstructionSource,
   enhanceSheetViews,
   formatValue,
   isOutputValue,
-  lower,
   mountOutputWidgets,
-  parse,
   parseAndEvaluate,
   renderGraphicSvg,
   renderOutputHtml,
@@ -48,10 +48,8 @@ import {
 import { applyProjectTheme, DEFAULT_PROJECT_THEME } from "./theme.js";
 import {
   createRixNotebookEngine,
-  diagnosticForRixError,
   disposeNotebookRun,
   extractRixCells,
-  isInRixCell,
   parseFenceMetadata,
   whiteboardSourceNamespace,
   renderStaticDocument,
@@ -116,7 +114,7 @@ const helpExternalLink = document.querySelector("#help-external-link");
 const fileContextMenu = document.querySelector("#file-context-menu");
 const exportDialog = document.querySelector("#export-dialog");
 const exportProfileSelect = document.querySelector("#export-profile");
-const updateProfileTargets = () => { for (const input of [exportMarkdown, exportHtml, exportQuarto]) input.disabled = Boolean(exportProfileSelect.value); };
+const updateProfileTargets = () => { for (const input of [exportMarkdown, exportHtml, exportQuarto]) input.disabled = Boolean(exportProfileSelect.value); updateExportCapabilityNotice(exportDialog, notebookExportCapabilities({host:"native", liveHtml:true}), exportProfileSelect.value ? projects.exportProfile(exportProfileSelect.value, exportNotebookSelect.value) : null); };
 const exportScopeSelect = document.querySelector("#export-scope");
 const exportNotebookLabel = document.querySelector("#export-notebook-label");
 const exportNotebookSelect = document.querySelector("#export-notebook-select");
@@ -179,6 +177,8 @@ const markdownRenderer = new MarkdownIt({
 });
 
 const exportMarkdownRenderer = new MarkdownIt({ html: false, linkify: true, typographer: true });
+markdownRenderer.use(notebookMarkdownReferences);
+exportMarkdownRenderer.use(notebookMarkdownReferences);
 const KATEX_PUBLIC_ROOT = new URL(`${import.meta.env.BASE_URL}katex/`, window.location.origin);
 const LIVE_RUNTIME_PUBLIC_ROOT = new URL(`${import.meta.env.BASE_URL}rix-live/`, window.location.origin);
 const HELP_PUBLIC_ROOT = new URL(`${import.meta.env.BASE_URL}help/`, window.location.origin);
@@ -410,94 +410,15 @@ async function openHelp(section = "notebook") {
   }
 }
 
-// The runtime parser is deliberately used here instead of the editor grammar:
-// this catches only syntax/lowering errors and never evaluates notebook code.
-const rixNotebookLinter = linter((view) => {
-  if (activeDocument.kind !== "note") return [];
-  const diagnostics = [];
-  for (const cell of extractRixCells(view.state.doc.toString())) {
-    try {
-      lower(parse(cell.code));
-    } catch (error) {
-      diagnostics.push(diagnosticForRixError(error, cell));
-    }
-  }
-  return diagnostics;
-}, { delay: 350 });
-
-const notebookSystemContext = createDefaultSystemContext({
-  pluginCatalog: createNotebookBundledPluginCatalog(),
-});
-const systemCompletions = notebookSystemContext.getAllNames().map((name) => ({
-  label: name,
-  type: "function",
-  detail: `.${name}`,
-  info: notebookSystemContext.get(name)?.doc || "RiX system capability",
-}));
-
-const rixSyntaxCompletions = [
-  { label: ":=", type: "operator", detail: "assignment", info: "Assign a value to a lowercase identifier." },
-  { label: "??", type: "operator", detail: "conditional", info: "Start a RiX conditional expression." },
-  { label: "?:", type: "operator", detail: "otherwise", info: "Separate the fallback branch of a conditional." },
-  { label: "{=", type: "keyword", detail: "map", info: "Start a map container." },
-  { label: "{?", type: "keyword", detail: "case", info: "Start a case container." },
-  { label: "{;", type: "keyword", detail: "block", info: "Start a block container." },
-  { label: "{|", type: "keyword", detail: "set", info: "Start a set container." },
-  { label: "{:", type: "keyword", detail: "tuple", info: "Start a tuple container." },
-  { label: "{@", type: "keyword", detail: "loop", info: "Start a loop container." },
-];
-
-function rixCompletionSource(context) {
-  const source = context.state.doc.toString();
-  if (!isInRixCell(source, context.pos)) return null;
-  const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*/);
-  const wordStart = word?.from ?? context.pos;
-  const systemMember = source[wordStart - 1] === ".";
-  if (systemMember) {
-    if (!word && !context.explicit) return null;
-    return { from: wordStart, options: systemCompletions };
-  }
-  if (!word && !context.explicit) return null;
-  return { from: wordStart, options: rixSyntaxCompletions };
-}
-
-const RIX_HOVER_HELP = new Map([
-  [":=", "Assign a value. RiX assignment targets lowercase identifiers."],
-  ["??", "Conditional operator. Use `condition ?? yes ?: no`."],
-  ["?:", "Fallback branch of a RiX conditional."],
-  ["{=", "Map container. Example: `{= radius=3}`."],
-  ["{?", "Case container."],
-  ["{;", "Block container."],
-  ["{|", "Set container."],
-  ["{:", "Tuple container."],
-  ["{@", "Loop container."],
-]);
-
-function rixHoverTooltip(view, position) {
-  const source = view.state.doc.toString();
-  if (!isInRixCell(source, position)) return null;
-  const before = source.slice(0, position + 1);
-  const match = before.match(/(?:\.[A-Za-z_][A-Za-z0-9_]*|:=|\?\?|\?:|\{[=\?;|:@])$/);
-  if (!match) return null;
-  const token = match[0];
-  const capability = token.startsWith(".") ? notebookSystemContext.get(token.slice(1).toUpperCase()) : null;
-  const message = capability?.doc || RIX_HOVER_HELP.get(token);
-  if (!message) return null;
-  return {
-    pos: position + 1 - token.length,
-    end: position + 1,
-    above: true,
-    create() {
-      const dom = document.createElement("div");
-      dom.className = "rix-editor-tooltip";
-      dom.textContent = message;
-      return { dom };
-    },
-  };
-}
+// Both hosts consume the same non-evaluating language service adapter.
+const rixNotebookLinter = linter((view) => ["note", "file", "folder-file"].includes(activeDocument.kind) ? rixEngine.validate(view.state.doc.toString()) : [], { delay: 350 });
+const sharedCompletionSource = notebookCompletionSource(rixEngine);
+const sharedHoverSource = notebookHoverSource(rixEngine);
+const rixCompletionSource = (context) => ["note", "file", "folder-file"].includes(activeDocument.kind) ? sharedCompletionSource(context) : null;
+const rixHoverTooltip = (view, position) => ["note", "file", "folder-file"].includes(activeDocument.kind) ? sharedHoverSource(view, position) : null;
 
 function jumpToLine(line) {
-  const target = editor.state.doc.line(Math.min(line, editor.state.doc.lines));
+  const target = editor.state.doc.line(Math.max(1, Math.min(line, editor.state.doc.lines)));
   editor.dispatch({ selection: { anchor: target.from }, scrollIntoView: true });
   editor.focus();
 }
@@ -544,13 +465,13 @@ function appendOutput(statement, runtime) {
   result.append(lineNumber, source, value);
   result.addEventListener("click", (event) => {
     if (event.target.closest("a, button, input, select, textarea, summary, details, canvas, svg, [data-rix-drag-target], [data-rix-graphic-action], [data-rix-geometry-object], td[data-rix-address]")) return;
-    jumpToLine(statement.line);
+    if (statement.diagnostic || Number.isInteger(statement.position)) { editor.dispatch({ selection: { anchor: Math.max(0, Math.min(statement.diagnostic?.from ?? statement.position, editor.state.doc.length)) }, scrollIntoView: true }); editor.focus(); } else jumpToLine(statement.line);
   });
   result.addEventListener("keydown", (event) => {
     if (event.target !== result) return;
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
-    jumpToLine(statement.line);
+    if (statement.diagnostic || Number.isInteger(statement.position)) { editor.dispatch({ selection: { anchor: Math.max(0, Math.min(statement.diagnostic?.from ?? statement.position, editor.state.doc.length)) }, scrollIntoView: true }); editor.focus(); } else jumpToLine(statement.line);
   });
   output.append(result);
 }
@@ -593,7 +514,7 @@ function renderQuartoDocumentContent(document, runs, inlineRuns, options = {}) {
     const staticContent = staticCellReplacement(run, graphicReference);
     const runtimeSource = includeRuntimeSource ? quartoRuntimeSourceMarkup(node.value) : "";
     if (!options.liveCellIndexes?.has(node.value.index)) return `${runtimeSource}${staticContent ? `\n\n${staticContent}\n\n` : ""}`;
-    return `${runtimeSource}\n\n::: {.rix-static}\n${staticContent}\n:::\n\n::: {.rix-live}\n${liveWidgetMarkup(node.value.index, node.value.metadata.showCode)}\n:::\n\n`;
+    return `${runtimeSource}\n\n::: {.rix-static data-rix-initial-cell="${node.value.index}"}\n${staticContent}\n:::\n\n::: {.rix-live}\n${liveWidgetMarkup(node.value.index, node.value.metadata.showCode)}\n:::\n\n`;
   }).join("");
 }
 
@@ -1310,6 +1231,7 @@ async function exportScope({ scope, notebookPath, includeMarkdown, includeHtml, 
           },
         ));
       }
+      staticSources.set(target, rewriteNotebookLinks(staticSources.get(target), { note: notePath, destinations: new Map(notes.map(path => [path, noteTargetPath(pathRelative(projects.project.directory, path), target)])) }));
       if (hasLiveCells && target !== "markdown") liveTargets.add(target);
     }
     if (outputRoots.markdown) {

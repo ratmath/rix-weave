@@ -1,3 +1,6 @@
+import { outputAnchor } from "./document-references.js";
+import { createNotebookAuthoringService, diagnosticForRixError } from "./authoring.js";
+export { diagnosticForRixError } from "./authoring.js";
 import { createOutputBundleHost } from "../../../../rix/src/runtime/output-bundle-host.js";
 import { renderMarkdown } from "../../../../rix/plugins/renderers/document-renderers.js";
 import { Integer, Rational, RationalInterval } from "@ratmath/core";
@@ -68,12 +71,6 @@ export function whiteboardSourceNamespace(source, cell) {
   return `geometryboardcell${largest + 1}`;
 }
 
-export function diagnosticForRixError(error, cell) {
-  const message = error instanceof Error ? error.message : String(error);
-  const offset = Math.min(Number(message.match(/position (\d+)/)?.[1] ?? cell.code.length), cell.code.length);
-  const from = cell.codeStart + offset;
-  return { from, to: Math.min(from + 1, cell.codeStart + cell.code.length), severity: "error", message };
-}
 
 function extractFencedRanges(source) {
   const ranges = [];
@@ -101,7 +98,7 @@ export function extractInlineExpressions(source) {
     }
     if (depth !== 0) { index += 2; continue; }
     const expression = source.slice(index + 2, cursor - 1).trim();
-    if (expression) expressions.push({ start: index, end: cursor, expression, line: source.slice(0, index).split("\n").length });
+    if (expression) expressions.push({ start: index, end: cursor, expression, codeStart: index + 2 + source.slice(index + 2, cursor - 1).search(/\S/), line: source.slice(0, index).split("\n").length });
     index = cursor;
   }
   return expressions;
@@ -251,8 +248,8 @@ function* executeCellSteps(cell, runtime, context) {
       for (const slider of runtime.sliders.slice(sliderStart)) Object.assign(slider, { name: sliderName, line });
       if (publicationTarget && runtime.currentPublication[publicationTarget]?.declared) runtime.currentPublication[publicationTarget].observed = observed;
       if (!hostCommand) implicitOutput = { available: true, value, observed };
-      statements.push({ line, code: source.code, value, observed, content: formatValue(value), html: isOutputValue(value) ? renderOutputHtml(value, formatValue) : null, kind: "result", position: cell.start + source.start });
-    } catch (error) { if (runtime.controller.signal.aborted || error?.code === "EVALUATION_LIMIT") throw error; statements.push({ line, code: source.code, content: error instanceof Error ? error.message : String(error), kind: "error", position: cell.start + source.start }); break; }
+      statements.push({ line, code: source.code, value, observed, content: formatValue(value), html: isOutputValue(value) ? renderOutputHtml(value, formatValue) : null, kind: "result", position: cell.codeStart + source.start });
+    } catch (error) { if (runtime.controller.signal.aborted || error?.code === "EVALUATION_LIMIT") throw error; statements.push({ line, code: source.code, content: error instanceof Error ? error.message : String(error), kind: "error", diagnostic: diagnosticForRixError(error, cell), position: cell.codeStart + source.start }); break; }
   }
   const channel = runtime.mode === "static" ? "static" : "live";
   const selected = runtime.currentPublication[channel].declared ? runtime.currentPublication[channel] : runtime.currentPublication.out.declared ? runtime.currentPublication.out : implicitOutput;
@@ -336,7 +333,7 @@ export function staticOutputMarkdown(value, { graphicReference = null, figureAlt
   if (value.kind === "paragraph") return renderMarkdown(value, { format: formatValue }).content.trimEnd();
   if (value.kind === "heading") return renderMarkdown(value, { format: formatValue }).content.trimEnd();
   if (value.kind === "fragment") return value.children.map((child) => staticOutputMarkdown(child, { graphicReference })).join("\n\n");
-  if (value.kind === "table") { const headings = value.columns.map((column) => escapeMarkdownCell(column.label)); const rows = value.rows.map((row) => `| ${row.map((cell) => escapeMarkdownCell(formatValue(cell))).join(" | ")} |`); return [[`| ${headings.join(" | ")} |`, `| ${headings.map(() => "---").join(" | ")} |`, ...rows].join("\n"), value.caption ? `*${value.caption}*` : ""].filter(Boolean).join("\n\n"); }
+  if (value.kind === "table") { const headings = value.columns.map((column) => escapeMarkdownCell(column.label)); const rows = value.rows.map((row) => `| ${row.map((cell) => escapeMarkdownCell(formatValue(cell))).join(" | ")} |`); return [outputAnchor(value.label), [`| ${headings.join(" | ")} |`, `| ${headings.map(() => "---").join(" | ")} |`, ...rows].join("\n"), value.caption ? `*${value.caption}*` : ""].filter(Boolean).join("\n\n"); }
   if (value.kind === "grid") return gridLatex(value, formatValue);
   if (value.kind === "graphic") {
     const description = graphicTextMarkdown(value);
@@ -344,7 +341,7 @@ export function staticOutputMarkdown(value, { graphicReference = null, figureAlt
       ? `![${figureAlt || createGraphicsTextPlan(value, formatValue).summary}](${graphicReference(value)})\n\n${description}`
       : description;
   }
-  if (value.kind === "figure") return [staticOutputMarkdown(value.content, { graphicReference, figureAlt: value.alt || value.caption || figureAlt }), value.caption ? `*${value.caption}*` : ""].filter(Boolean).join("\n\n");
+  if (value.kind === "figure") return [outputAnchor(value.label), staticOutputMarkdown(value.content, { graphicReference, figureAlt: value.alt || value.caption || figureAlt }), value.caption ? `*${value.caption}*` : ""].filter(Boolean).join("\n\n");
   if (value.kind === "slide") return ["---", value.title ? `## ${value.title}` : "", staticOutputMarkdown(value.content, { graphicReference }), value.notes ? `<!-- Speaker notes: ${value.notes} -->` : ""].filter(Boolean).join("\n\n");
   if (value.kind === "slides") return value.slides.map((slide) => staticOutputMarkdown(slide, { graphicReference })).join("\n\n");
   return renderMarkdown(value, { format: formatValue, graphic: (graphic) => staticOutputMarkdown(graphic, { graphicReference }) }).content.trimEnd();
@@ -365,9 +362,12 @@ export function createRixNotebookEngine(configuration = {}) {
     pluginCatalog: configuration.pluginCatalog,
     plugins: configuration.plugins || [],
     taskWorkerPool: configuration.taskWorkerPool || null,
-    configure(next = {}) { if (next.pluginCatalog) this.pluginCatalog = next.pluginCatalog; if (next.plugins) this.plugins = next.plugins; return this; },
+    configure(next = {}) { if (next.pluginCatalog) this.pluginCatalog = next.pluginCatalog; if (next.plugins) this.plugins = next.plugins; authoring.invalidate(); return this; },
     parseDocument: parseNotebookDocument,
-    validate(source) { const diagnostics = []; for (const cell of extractRixCells(source)) try { lower(parse(cell.code)); } catch (error) { diagnostics.push(diagnosticForRixError(error, cell)); } return diagnostics; },
+    validate(source) { return authoring.validate(source); },
+    complete(source, position, explicit) { return authoring.complete(source, position, explicit); },
+    hover(source, position) { return authoring.hover(source, position); },
+    definitions(source, position) { return authoring.definitions(source, position); },
     getCompletions() { const context = createDefaultSystemContext({ pluginCatalog: this.pluginCatalog }); return context.getAllNames().map((name) => ({ label: name, type: "function", detail: `.${name}`, info: context.get(name)?.doc || "RiX system capability" })); },
     async executeDocumentAsync(source, options = {}) {
       if (closed) throw new Error("Notebook engine is closed");
@@ -395,8 +395,8 @@ export function createRixNotebookEngine(configuration = {}) {
             if (controller.signal.aborted || error?.code === "EVALUATION_LIMIT") throw error;
             const content = error instanceof Error ? error.message : String(error);
             result = event.type === "cell"
-              ? { cell: event.value, metadata: event.value.metadata, statements: [{ line: event.value.codeLine, code: event.value.code.trim(), content, kind: "error", position: event.start }] }
-              : { start: event.start, end: event.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", position: event.start } };
+              ? { cell: event.value, metadata: event.value.metadata, statements: [{ line: event.value.codeLine, code: event.value.code.trim(), content, kind: "error", diagnostic: diagnosticForRixError(error, event.value), position: event.value.codeStart }] }
+              : { start: event.start, end: event.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", diagnostic: diagnosticForRixError(error, event.value), position: event.start } };
           }
           evaluationCheckpoint(runtime.context);
           if (event.type === "cell") {
@@ -420,11 +420,15 @@ export function createRixNotebookEngine(configuration = {}) {
     executeDocument(source, options = {}) {
       if (closed) throw new Error("Notebook engine is closed");
       const document = parseNotebookDocument(source); const runtime = makeNotebookRuntime(this, options.sliderOverrides || new Map(), options); const runs = new Array(document.cells.length); const inlineRuns = []; const outputStatements = [];
-      for (const event of document.nodes) if (event.type === "cell") { const cell = event.value; try { runs[cell.index] = executeCell(cell, runtime); } catch (error) { runs[cell.index] = { cell, metadata: cell.metadata, statements: [{ line: cell.codeLine, code: cell.code.trim(), content: error instanceof Error ? error.message : String(error), kind: "error", position: cell.start }] }; } for (const statement of runs[cell.index].statements) statement.cell = cell; outputStatements.push(...runs[cell.index].statements); } else { try { const run = executeInlineExpression(event.value, runtime); inlineRuns.push(run); outputStatements.push(run.statement); } catch (error) { const content = error instanceof Error ? error.message : String(error); const run = { start: event.value.start, end: event.value.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", position: event.value.start } }; inlineRuns.push(run); outputStatements.push(run.statement); } }
+      for (const event of document.nodes) if (event.type === "cell") { const cell = event.value; try { runs[cell.index] = executeCell(cell, runtime); } catch (error) { runs[cell.index] = { cell, metadata: cell.metadata, statements: [{ line: cell.codeLine, code: cell.code.trim(), content: error instanceof Error ? error.message : String(error), kind: "error", diagnostic: diagnosticForRixError(error, cell), position: cell.codeStart }] }; } for (const statement of runs[cell.index].statements) statement.cell = cell; outputStatements.push(...runs[cell.index].statements); } else { try { const run = executeInlineExpression(event.value, runtime); inlineRuns.push(run); outputStatements.push(run.statement); } catch (error) { const content = error instanceof Error ? error.message : String(error); const run = { start: event.value.start, end: event.value.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", diagnostic: diagnosticForRixError(error, event.value), position: event.value.start } }; inlineRuns.push(run); outputStatements.push(run.statement); } }
       const run = { document, cells: document.cells, inlineRuns, runs, outputStatements: outputStatements.sort((left, right) => left.position - right.position), sliders: runtime.sliders, runtime, renderedSource: replaceInlineExpressions(source, inlineRuns), staticRenderedSource: options.mode === "static" ? renderStaticDocument(document, runs, inlineRuns) : null };
       ownedRuns.add(run); run.release = () => ownedRuns.delete(run); return run;
     },
   };
+  const authoring = createNotebookAuthoringService({ parseDocument: parseNotebookDocument, getCatalog() {
+    const context = createDefaultSystemContext({ pluginCatalog: engine.pluginCatalog });
+    return { entries: context.getAllNames().map((name) => ({ name, kind: "function", source: "rix-system", documentation: context.get(name)?.doc || "RiX system capability" })), plugins: engine.pluginCatalog?.list() || [] };
+  } });
   return assertNotebookEngine(engine);
 }
 
