@@ -33,7 +33,7 @@ RiX-specific code and styling live under `webview/`. See the
 [host review](ARCHITECTURE.md), [DocShell guide](docshell/README.md), and
 [web-core guide](webview/source/notebook-web/README.md).
 
-### Browser single-file prototype
+### Browser files and ZIP projects
 
 The browser host is usable without Tauri. It opens either a single Markdown
 file or a ZIP archive. A ZIP becomes a virtual project directory with the
@@ -127,8 +127,9 @@ The notebook has two deliberately separate plugin locations.
   allowed). On opening a note, the desktop app scans only files named
   `*.plugin.rix` and `*.plugin.rix.js`, reads their leading `/** YAML **/`
   manifest, and adds them to the catalog. A project `.plugin.rix` can be
-  loaded. A project `.plugin.rix.js` is discoverable but cannot execute: adding
-  JavaScript execution requires an explicit bundled-app approval above.
+  loaded. A project `.plugin.rix.js` is discovered as metadata first; the native
+  host installs its implementation only after the explicit plugin approval
+  described below. The browser host supports bundled plugins only.
 
 Enable known plugins for every notebook in a project with `project.toml`, or
 only for one notebook with its `notebook.toml`. `plugin_dirs` is optional and
@@ -320,13 +321,14 @@ supported captures, budgets and cleanup. After `bun run build:browser`,
 rapid rerun cancellation (set `RIX_PLAYWRIGHT_MODULE` / `RIX_CHROME_EXECUTABLE`
 when Playwright or Chrome are installed outside this project).
 
-## Remaining integration work
+## Authoring, diagnostics, and host boundaries
 
-Reconciled 2026-09-20. The umbrella `ratmath/WORK_PLAN.md` is the execution queue.
-H2 authoring and supported host exports are implemented. Remaining integration:
-embed RiXCel documents and their explicit named exports (C3), extend runnable
-tutorial coverage (H3), and refresh distributed bundles in the final release
-verification (Q1). Note references never execute the linked note.
+Authoring assistance, supported exports, and embedded RiXCel documents are
+implemented. The [capstone tutorial](../rix/documentation/tutorial/capstones.md)
+connects publication, checked numerics, exact-number displays, coordinates,
+cancellation, and spreadsheet interchange. Note references never execute the
+linked note. The umbrella `ratmath/WORK_PLAN.md` tracks remaining project work;
+it is not required to use the workflows documented here.
 
 Both editors use the shared RiX language service for completion, hover help,
 syntax diagnostics and precise result/error navigation, including inline RiX.
@@ -372,9 +374,9 @@ The first notebook runtime deliberately does not support RiX filesystem/script
 imports; project-aware module imports will be introduced through a constrained
 notebook module resolver rather than Node APIs.
 
-The next project-management slice adds Tauri's dialog and filesystem plugins.
-These are used only after a user selects a project folder; the application does
-not receive a blanket home-directory filesystem scope.
+Native project management uses Tauri's dialog and filesystem plugins only
+after a user selects a project folder; the application does not receive a
+blanket home-directory filesystem scope.
 
 ## Portable media in publication exports
 
@@ -457,3 +459,29 @@ Static exports contain the rendered sheet and named values. A downloaded live
 page cannot reopen project paths; its initial static result remains available.
 Embed JSON with `.cel` for portable interaction. See the runnable
 [Cel notebook example](examples/cel-embedding/README.md).
+
+## Rebuild and verify the packaged frontends
+
+First rebuild the RiX documentation site in the sibling `rix/docs/` directory
+using its documented build command. From `rix-nb/`, `bun run build:web` copies
+that site into packaged help, rebuilds the Notebook quick reference and offline
+live runtime, and produces the native WebView in `dist/`.
+`bun run build:browser` creates the standalone browser host in `dist-web/`.
+Neither frontend command packages a macOS application; `bun run build` performs
+the native Tauri build. Generated help, live assets, and both distribution
+directories are ignored build products, not hand-maintained documentation.
+
+After both frontend builds, the browser acceptance scripts cover the actual
+compiled hosts:
+
+```sh
+bun scripts/check-authoring-browser.js
+bun scripts/check-async-browser.js
+RIX_LIVE_BUNDLE=public/rix-live/rix-live.js bun scripts/check-cel-browser.js
+RIX_LIVE_BUNDLE=public/rix-live/rix-live.js bun scripts/check-cel-tensor-browser.js
+```
+
+These require installed Playwright and Chromium. Set `RIX_PLAYWRIGHT_MODULE`
+and `RIX_CHROME_EXECUTABLE` to existing installations if they are not found by
+default. They serve local fixtures and retain acceptance artifacts under the
+umbrella repository's `tmp/`; no notebook is uploaded or published.

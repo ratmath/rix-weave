@@ -6,8 +6,9 @@ filesystem, dialog, Git, or macOS imports.
 * `../../../docshell/src/contracts.js` defines the narrow `NotebookEngine`,
   `DocumentStore`, and host callback boundaries shared with other editors.
 * `rix-engine.js` is the RiX implementation of `NotebookEngine`: it parses
-  Markdown/RiX documents, performs linear evaluation, exposes sliders, and
-  produces static Markdown output.
+  Markdown/RiX documents, awaits source-ordered evaluation, exposes sliders and
+  embedded Cel handles, and produces static publication output. Async runs own
+  cancellation and resource disposal; a synchronous embedding API is also available.
 * `workbench.js` mounts a standalone CodeMirror editor, result list, and
   Markdown/KaTeX preview in any browser DOM.
 
@@ -50,3 +51,18 @@ const notebook = mountNotebookWeb({
   host: { onDocumentChange(source) { saveDraft(source); } },
 });
 ```
+
+## Host capabilities and examples
+
+Use [the Notebook guide](../../../README.md) for source-order modes, authoring
+diagnostics, profiles, host-specific export targets, and build commands. Open
+[the Cel embedding project](../../../examples/cel-embedding/README.md) as a ZIP
+project to exercise `.celOpen`, exact named exports and read-only tensor views.
+A standalone Markdown upload cannot read adjacent `.rixcel`/`.rixbook` files;
+embed JSON with `.cel` or upload the project ZIP instead.
+
+Static exports retain initial sheets, figures and exact values. A live exported
+page cannot reopen project-local files after download. Native filesystem/plugin
+grants are supplied by the native adapter and are never inherited by this
+browser core. Reruns and closing the workbench dispose prior owned sessions,
+subscriptions and asynchronous resources.

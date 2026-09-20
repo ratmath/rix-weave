@@ -55,6 +55,39 @@ y := x^2;
 \`\`\`
 
 The positional form is \`(interval, step-or-steps, start)\`. A positive integer second argument of 3 or greater means a number of steps; other nonzero exact values are steps. The map form accepts \`interval\`, \`step\` or \`steps\`, and \`start\`.
+
+## Authoring and cancellation
+
+Completion, hover help and diagnostics use the shared RiX language service. Select
+an error or result to return to its source. Flow, singleton and refresh contexts
+also determine which names completion can see. Cells and inline values are awaited
+in document order; a new run cancels superseded cooperative work and disposes its
+owned resources. Completed external effects are not rolled back.
+
+## Embedded spreadsheets
+
+Use \`.cel(JSON text)\` for portable embedded RiXCel/RiXBook data, or
+\`.celOpen("data.rixbook", "sales")\` for a project file relative to the current
+note. Browser file access requires an uploaded project ZIP; a standalone note
+cannot read adjacent files. A handle exposes \`.Sheet()\`, \`.View("name")\`,
+\`.Get("name")\`, \`.Set([1,1], "7/3")\`, and \`.Record()\` for explicit saving.
+TensorView, Materialize, Region and Format provide finite tensor planes, exact
+snapshots and persistent presentation. Materialization is atomic, requires empty
+destination cells and is limited to 4096 cells. Rerun/close disposes the session.
+
+## Publication and host boundaries
+
+Saved export profiles select named inputs, plugins and supported targets. Browser
+projects download static HTML/Markdown/Quarto ZIPs. Native Notebook also exports
+local live HTML with initial static output. Live pages cannot reopen project files;
+embed JSON if the exported page needs portable spreadsheet interaction. Source
+values remain exact when decimal presentation rounds their display.
+
+Native PDF/LaTeX compilation belongs to CLI publication builds. Missing tools,
+unsupported targets and missing plugins produce diagnostics and static/source
+fallbacks rather than a false successful binary result. Review the manifest and
+its artifact hashes when sharing a profile build.
+
 `;
 
 await rm(outputRoot, { recursive: true, force: true });
