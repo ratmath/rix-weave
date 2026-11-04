@@ -14,6 +14,11 @@ test("RiX engine evaluates cells and inline values in document order", () => {
   expect(run.renderedSource).toContain("The value is 3.");
 });
 
+test("a statement that begins with a string literal keeps its opening quote in the result list", () => {
+  const run = engine().executeDocument('```rix\n"abc" ++ "def";\n  "x";\nn := 2;\n```');
+  expect(run.runs[0].statements.map((statement) => statement.code)).toEqual(['"abc" ++ "def";', '"x";', "n := 2;"]);
+});
+
 test("RiX engine honors static-only publication code", () => {
   const run = engine().executeDocument("```rix\nx := 2;\n.static({; x := 5; });\nx;\n```", { mode: "static" });
   expect(run.runs[0].staticOutput.content).toBe("5");

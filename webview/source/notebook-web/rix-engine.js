@@ -124,7 +124,8 @@ function splitTopLevelStatements(source) {
   const openers = new Set(["(", "[", "{", "{!", "{=", "{?", "{;", "{|", "{:", "{..", "{@", "{#", "{$", "{^", "{>"]);
   for (const token of tokenize(source)) {
     if (token.type === "End") break;
-    if (start === null) start = token.pos[1] ?? token.pos[0];
+    // A string token's content position skips its opening quote, so a statement that begins with a string starts at the token itself.
+    if (start === null) start = token.type === "String" ? token.pos[0] + source.slice(token.pos[0]).search(/\S/) : token.pos[1] ?? token.pos[0];
     if (openers.has(token.value)) depth += 1;
     if ([")", "]", "}"].includes(token.value)) depth = Math.max(0, depth - 1);
     if (token.value === ";" && depth === 0) { statements.push({ start, code: source.slice(start, token.pos[2]).trim() }); start = null; }
