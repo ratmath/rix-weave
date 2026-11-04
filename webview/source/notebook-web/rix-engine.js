@@ -47,13 +47,31 @@ export function parseFenceMetadata(header = "") {
   return metadata;
 }
 
+// CommonMark-style fenced blocks: a fence opens with three or more backticks
+// or tildes (indented at most three spaces) and closes with a line of the same
+// character at least as long. Fences nested inside a longer fence are content.
+function scanFences(source) {
+  const fences = []; let open = null; let offset = 0;
+  for (const line of source.split("\n")) {
+    const lineEnd = offset + line.length;
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (!open && marker && !(marker[1][0] === "`" && marker[2].includes("`"))) {
+      open = { start: offset, codeStart: Math.min(lineEnd + 1, source.length), char: marker[1][0], length: marker[1].length, info: marker[2].trim(), line: source.slice(0, offset).split("\n").length };
+    } else if (open && marker && marker[1][0] === open.char && marker[1].length >= open.length && !marker[2].trim()) {
+      fences.push({ ...open, codeEnd: offset, end: lineEnd }); open = null;
+    }
+    offset = lineEnd + 1;
+  }
+  if (open) fences.push({ ...open, codeEnd: source.length, end: source.length, unclosed: true });
+  return fences;
+}
+
 export function extractRixCells(source) {
   const cells = [];
-  const fencePattern = /^```rix(?:[ \t]+([^\n]*))?[ \t]*\n([\s\S]*?)^```[ \t]*$/gim;
-  let match;
-  while ((match = fencePattern.exec(source)) !== null) {
-    const line = source.slice(0, match.index).split("\n").length;
-    cells.push({ index: cells.length, start: match.index, end: fencePattern.lastIndex, codeStart: source.indexOf("\n", match.index) + 1, code: match[2], codeLine: line + 1, line, metadata: parseFenceMetadata(match[1] || "") });
+  for (const fence of scanFences(source)) {
+    const info = fence.info.match(/^rix(?:[ \t]+(.*))?$/i);
+    if (fence.char !== "`" || fence.unclosed || !info) continue;
+    cells.push({ index: cells.length, start: fence.start, end: fence.end, codeStart: fence.codeStart, code: source.slice(fence.codeStart, fence.codeEnd), codeLine: fence.line + 1, line: fence.line, metadata: parseFenceMetadata(info[1] || "") });
   }
   return cells;
 }
@@ -73,21 +91,26 @@ export function whiteboardSourceNamespace(source, cell) {
 }
 
 
-function extractFencedRanges(source) {
-  const ranges = [];
-  const pattern = /^```[^\n]*\n[\s\S]*?^```[ \t]*$/gim;
-  let match;
-  while ((match = pattern.exec(source)) !== null) ranges.push({ start: match.index, end: pattern.lastIndex });
-  return ranges;
-}
-
 export function extractInlineExpressions(source) {
   const expressions = [];
-  const fences = extractFencedRanges(source);
+  const fences = scanFences(source);
   let fenceIndex = 0;
   for (let index = 0; index < source.length;) {
     const fence = fences[fenceIndex];
-    if (fence && index >= fence.start) { index = fence.end; fenceIndex += 1; continue; }
+    if (fence && index >= fence.start) { index = Math.max(index, fence.end); fenceIndex += 1; continue; }
+    if (source[index] === "`") {
+      // An inline code span ends at the next backtick run of the same length.
+      const run = source.slice(index).match(/^`+/)[0].length;
+      const limit = fence ? fence.start : source.length;
+      let close = -1;
+      for (let probe = source.indexOf("`", index + run); probe !== -1 && probe < limit; probe = source.indexOf("`", probe + 1)) {
+        const length = source.slice(probe).match(/^`+/)[0].length;
+        if (length === run) { close = probe; break; }
+        probe += length - 1;
+      }
+      index = close === -1 ? index + run : close + run;
+      continue;
+    }
     if (source[index] !== "@" || source[index + 1] !== "{") { index += 1; continue; }
     let depth = 1; let quote = null; let escaped = false; let cursor = index + 2;
     for (; cursor < source.length && depth > 0; cursor += 1) {
@@ -124,6 +147,8 @@ function splitTopLevelStatements(source) {
   const openers = new Set(["(", "[", "{", "{!", "{=", "{?", "{;", "{|", "{:", "{..", "{@", "{#", "{$", "{^", "{>"]);
   for (const token of tokenize(source)) {
     if (token.type === "End") break;
+    // A comment between statements lowers to its own NOP node; keep it as its own entry so sources stay aligned.
+    if (start === null && token.kind === "comment") { statements.push({ start: token.pos[0], code: source.slice(token.pos[0], token.pos[2]).trim(), comment: true }); continue; }
     // A string token's content position skips its opening quote, so a statement that begins with a string starts at the token itself.
     if (start === null) start = token.type === "String" ? token.pos[0] + source.slice(token.pos[0]).search(/\S/) : token.pos[1] ?? token.pos[0];
     if (openers.has(token.value)) depth += 1;
@@ -131,7 +156,7 @@ function splitTopLevelStatements(source) {
     if (token.value === ";" && depth === 0) { statements.push({ start, code: source.slice(start, token.pos[2]).trim() }); start = null; }
   }
   if (start !== null) statements.push({ start, code: source.slice(start).trim() });
-  return statements.filter((statement) => statement.code.length > 0);
+  return statements.filter((statement) => statement.comment || statement.code.length > 0);
 }
 
 function asRational(value, name) {
@@ -187,7 +212,10 @@ function makeNotebookRuntime(engine, overrides, options) {
   runtime.context.setEnv("__async_resource_contexts__", runtime.contexts);
   options.captureRuntime?.(runtime);
   runtime.controller = options.controller || new AbortController();
-  runtime.budget = options.async ? createEvaluationBudget({ maxSteps: options.maxSteps ?? 2_000_000, maxTimeMs: options.maxTimeMs ?? 30_000, signal: runtime.controller.signal }) : null;
+  // Async runs budget each cell and inline expression separately (see
+  // startEventBudget), so a limit in one cell keeps earlier results.
+  runtime.limits = { maxSteps: options.maxSteps ?? 50_000_000, maxTimeMs: options.maxTimeMs ?? 30_000 };
+  runtime.budget = options.async ? createEvaluationBudget({ ...runtime.limits, signal: runtime.controller.signal }) : null;
   runtime.taskWorkerPool = options.taskWorkerPool || engine.taskWorkerPool || null;
   runtime.cleanupGraceMs = options.cleanupGraceMs ?? 250;
   const pluginCatalog = clonePluginCatalog(options.pluginCatalog || engine.pluginCatalog);
@@ -228,6 +256,7 @@ function* executeCellSteps(cell, runtime, context) {
   const irNodes = lower(parse(cell.code)); const sources = splitTopLevelStatements(cell.code); const statements = []; let implicitOutput = { available: false, value: null };
   runtime.currentPublication = { out: { declared: false }, static: { declared: false }, live: { declared: false } };
   for (const [index, irNode] of irNodes.entries()) {
+    if (irNode?.fn === "NOP") continue; // comments produce no result row or output
     const source = sources[index] || { start: irNode.pos?.[0] || 0, code: "<source unavailable>" }; const line = cell.codeLine + posToLineCol(cell.code, source.start).line - 1;
     try {
       const sliderStart = runtime.sliders.length;
@@ -252,11 +281,15 @@ function* executeCellSteps(cell, runtime, context) {
       if (publicationTarget && runtime.currentPublication[publicationTarget]?.declared) runtime.currentPublication[publicationTarget].observed = observed;
       if (!hostCommand) implicitOutput = { available: true, value, observed };
       statements.push({ line, code: source.code, value, observed, content: formatValue(value), html: isOutputValue(value) ? renderOutputHtml(value, formatValue) : null, kind: "result", position: cell.codeStart + source.start });
-    } catch (error) { if (runtime.controller.signal.aborted || error?.code === "EVALUATION_LIMIT") throw error; statements.push({ line, code: source.code, content: error instanceof Error ? error.message : String(error), kind: "error", diagnostic: diagnosticForRixError(error, cell), position: cell.codeStart + source.start }); break; }
+    } catch (error) { if (runtime.controller.signal.aborted && error?.code !== "EVALUATION_LIMIT") throw error; statements.push({ line, code: source.code, content: error instanceof Error ? error.message : String(error), kind: "error", diagnostic: diagnosticForRixError(error, cell), position: cell.codeStart + source.start }); break; }
   }
   const channel = runtime.mode === "static" ? "static" : "live";
   const selected = runtime.currentPublication[channel].declared ? runtime.currentPublication[channel] : runtime.currentPublication.out.declared ? runtime.currentPublication.out : implicitOutput;
-  const publication = selected.available === false || selected.suppressed ? null : { value: selected.value, observed: selected.observed || null, content: formatValue(selected.value), kind: "result" };
+  const failure = statements.find(({ kind }) => kind === "error");
+  // A static export must not present a failed cell's earlier value as its result.
+  const publication = failure && runtime.mode === "static"
+    ? { value: null, observed: null, content: failure.content, kind: "error" }
+    : selected.available === false || selected.suppressed ? null : { value: selected.value, observed: selected.observed || null, content: formatValue(selected.value), kind: "result" };
   runtime.currentPublication = null; return { cell, statements, metadata: cell.metadata, staticOutput: runtime.mode === "static" ? publication : null, liveOutput: runtime.mode === "live" ? publication : null };
 }
 
@@ -308,6 +341,17 @@ function executeInlineExpression(inline, runtime) {
 async function executeEventAsync(event, runtime) {
   const context = event.type === "cell" ? cellContext(event.value, runtime) : prepareContext(runtime, runtime.context);
   return withFinalizerActivationAsync(context, () => driveAsync(event.type === "cell" ? executeCellSteps(event.value, runtime, context) : executeInlineSteps(event.value, runtime), runtime), { graceMs: runtime.cleanupGraceMs });
+}
+// A fresh step/time budget for one cell or inline expression. Its signal
+// follows the run's controller, and the time limit aborts only this event.
+function startEventBudget(runtime) {
+  const controller = new AbortController();
+  const follow = () => controller.abort(runtime.controller.signal.reason);
+  if (runtime.controller.signal.aborted) follow();
+  else runtime.controller.signal.addEventListener("abort", follow, { once: true });
+  runtime.budget = createEvaluationBudget({ ...runtime.limits, signal: controller.signal });
+  const timer = setTimeout(() => controller.abort(new EvaluationLimitError("Notebook evaluation time limit exceeded")), runtime.limits.maxTimeMs);
+  return () => { clearTimeout(timer); runtime.controller.signal.removeEventListener("abort", follow); };
 }
 function cancellation(message = "Notebook run superseded") { return new DOMException(message, "AbortError"); }
 async function settleWithin(promise, graceMs) {
@@ -389,20 +433,23 @@ export function createRixNotebookEngine(configuration = {}) {
       const run = { document, cells: document.cells, inlineRuns: [], runs: new Array(document.cells.length), outputStatements: [], sliders: runtime.sliders, runtime };
       ownedRuns.add(run); run.release = () => ownedRuns.delete(run);
       if (!options.isolated) current = run;
-      const timer = runtime.timer = setTimeout(() => controller.abort(new EvaluationLimitError("Notebook evaluation time limit exceeded")), runtime.budget.maxTimeMs);
+      const budgets = new Set();
       try {
         for (const event of document.nodes) {
-          evaluationCheckpoint(prepareContext(runtime, runtime.context));
+          const endBudget = startEventBudget(runtime); budgets.add(endBudget);
+          prepareContext(runtime, runtime.context);
           let result;
           try { result = await executeEventAsync(event, runtime); }
           catch (error) {
-            if (controller.signal.aborted || error?.code === "EVALUATION_LIMIT") throw error;
+            // Cancellation ends the run; a step or time limit is this event's error.
+            if (controller.signal.aborted && error?.code !== "EVALUATION_LIMIT") throw error;
             const content = error instanceof Error ? error.message : String(error);
             result = event.type === "cell"
-              ? { cell: event.value, metadata: event.value.metadata, statements: [{ line: event.value.codeLine, code: event.value.code.trim(), content, kind: "error", diagnostic: diagnosticForRixError(error, event.value), position: event.value.codeStart }] }
+              ? { cell: event.value, metadata: event.value.metadata, staticOutput: options.mode === "static" ? { value: null, content, kind: "error" } : null, statements: [{ line: event.value.codeLine, code: event.value.code.trim(), content, kind: "error", diagnostic: diagnosticForRixError(error, event.value), position: event.value.codeStart }] }
               : { start: event.start, end: event.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", diagnostic: diagnosticForRixError(error, event.value), position: event.start } };
           }
-          evaluationCheckpoint(runtime.context);
+          finally { endBudget(); budgets.delete(endBudget); }
+          controller.signal.throwIfAborted();
           if (event.type === "cell") {
             run.runs[event.value.index] = result;
             for (const statement of result.statements) statement.cell = event.value;
@@ -414,7 +461,7 @@ export function createRixNotebookEngine(configuration = {}) {
         run.staticRenderedSource = options.mode === "static" ? renderStaticDocument(document, run.runs, run.inlineRuns) : null;
         return run;
       } catch (error) { await disposeNotebookRun(run); ownedRuns.delete(run); throw error; }
-      finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); for (const context of runtime.contexts) if (context.getEnv("__evaluation_budget__", null) === runtime.budget) context.env.delete("__evaluation_budget__"); }
+      finally { for (const endBudget of budgets) endBudget(); options.signal?.removeEventListener("abort", abort); for (const context of runtime.contexts) if (context.getEnv("__evaluation_budget__", null) === runtime.budget) context.env.delete("__evaluation_budget__"); }
     },
     async reset() {
       generation++; const runs = [...ownedRuns]; ownedRuns.clear(); current = null;
@@ -424,7 +471,7 @@ export function createRixNotebookEngine(configuration = {}) {
     executeDocument(source, options = {}) {
       if (closed) throw new Error("Notebook engine is closed");
       const document = parseNotebookDocument(source); const runtime = makeNotebookRuntime(this, options.sliderOverrides || new Map(), options); const runs = new Array(document.cells.length); const inlineRuns = []; const outputStatements = [];
-      for (const event of document.nodes) if (event.type === "cell") { const cell = event.value; try { runs[cell.index] = executeCell(cell, runtime); } catch (error) { runs[cell.index] = { cell, metadata: cell.metadata, statements: [{ line: cell.codeLine, code: cell.code.trim(), content: error instanceof Error ? error.message : String(error), kind: "error", diagnostic: diagnosticForRixError(error, cell), position: cell.codeStart }] }; } for (const statement of runs[cell.index].statements) statement.cell = cell; outputStatements.push(...runs[cell.index].statements); } else { try { const run = executeInlineExpression(event.value, runtime); inlineRuns.push(run); outputStatements.push(run.statement); } catch (error) { const content = error instanceof Error ? error.message : String(error); const run = { start: event.value.start, end: event.value.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", diagnostic: diagnosticForRixError(error, event.value), position: event.value.start } }; inlineRuns.push(run); outputStatements.push(run.statement); } }
+      for (const event of document.nodes) if (event.type === "cell") { const cell = event.value; try { runs[cell.index] = executeCell(cell, runtime); } catch (error) { runs[cell.index] = { cell, metadata: cell.metadata, staticOutput: options.mode === "static" ? { value: null, content: error instanceof Error ? error.message : String(error), kind: "error" } : null, statements: [{ line: cell.codeLine, code: cell.code.trim(), content: error instanceof Error ? error.message : String(error), kind: "error", diagnostic: diagnosticForRixError(error, cell), position: cell.codeStart }] }; } for (const statement of runs[cell.index].statements) statement.cell = cell; outputStatements.push(...runs[cell.index].statements); } else { try { const run = executeInlineExpression(event.value, runtime); inlineRuns.push(run); outputStatements.push(run.statement); } catch (error) { const content = error instanceof Error ? error.message : String(error); const run = { start: event.value.start, end: event.value.end, replacement: `RiX error: ${content}`, statement: { line: event.value.line, code: `@{${event.value.expression}}`, content, kind: "error", label: "Inline RiX", diagnostic: diagnosticForRixError(error, event.value), position: event.value.start } }; inlineRuns.push(run); outputStatements.push(run.statement); } }
       const run = { document, cells: document.cells, inlineRuns, runs, outputStatements: outputStatements.sort((left, right) => left.position - right.position), sliders: runtime.sliders, runtime, renderedSource: replaceInlineExpressions(source, inlineRuns), staticRenderedSource: options.mode === "static" ? renderStaticDocument(document, runs, inlineRuns) : null };
       ownedRuns.add(run); run.release = () => ownedRuns.delete(run); return run;
     },

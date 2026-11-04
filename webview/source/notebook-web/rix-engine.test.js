@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createWidgetSession, formatValue, parseAndEvaluate } from "../../../../rix/src/index.js";
 import { createNotebookBundledPluginCatalog } from "../bundled-plugin-catalog.js";
-import { createRixNotebookEngine, disposeNotebookRun, parseFenceMetadata, whiteboardSourceNamespace } from "./rix-engine.js";
+import { createRixNotebookEngine, disposeNotebookRun, extractInlineExpressions, extractRixCells, parseFenceMetadata, whiteboardSourceNamespace } from "./rix-engine.js";
 import { publicationOutputHtml } from "./workbench.js";
 
 function engine() {
@@ -226,4 +226,28 @@ matrix := grid ~!: :Matrix;
   expect(run.outputStatements.at(-1)?.content).toBe("[1, Matrix, 13]");
   expect(run.outputStatements.map(({ kind }) => kind)).not.toContain("error");
   disposeNotebookRun(run);
+});
+
+test("static export shows a cell error instead of an earlier value", () => {
+  const run = engine().executeDocument("```rix\nx := 3;\ny := x/0;\nz := 5;\n```\n", { mode: "static" });
+  expect(run.staticRenderedSource).toContain("RiX export error:");
+  expect(run.staticRenderedSource).toContain("Division by zero");
+  expect(run.staticRenderedSource).not.toMatch(/^\s*3\s*$/m);
+  const parseFailure = engine().executeDocument("```rix\nx := (;\n```\n", { mode: "static" });
+  expect(parseFailure.staticRenderedSource).toContain("RiX export error:");
+});
+
+test("comments produce no result rows or exported output", () => {
+  const run = engine().executeDocument("```rix\nx := 3;\n## between\nx + 1;\n## trailing comment\n```\n", { mode: "static" });
+  expect(run.outputStatements.map(({ content }) => content)).toEqual(["3", "4"]);
+  expect(run.outputStatements[1].code).toBe("x + 1;");
+  expect(run.staticRenderedSource.trim()).toBe("4");
+});
+
+test("cell and inline extraction respect Markdown fences and code spans", () => {
+  const source = "````markdown\n```rix\n1/0;\n```\n@{9}\n````\n\nInline `@{1+1}` and ``a ` @{3} `` code, @{2+2} real.\n\n~~~\n```rix\n7;\n```\n~~~\n\n```rix edu\n5;\n```\n";
+  expect(extractRixCells(source).map(({ code, metadata }) => [code, metadata.role])).toEqual([["5;\n", "edu"]]);
+  expect(extractInlineExpressions(source).map(({ expression }) => expression)).toEqual(["2+2"]);
+  const run = engine().executeDocument(source);
+  expect(run.outputStatements.map(({ content }) => content)).toEqual(["4", "5"]);
 });

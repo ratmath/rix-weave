@@ -36,14 +36,20 @@ test("Notebook rerun cancels a pending host operation, suppresses stale results 
     expect(signal.aborted).toBe(true); expect(closed).toBe(1); expect(next.runs[0].liveOutput.content).toBe("5");
     await host.dispose(); await expect(host.executeDocumentAsync("")).rejects.toThrow("closed");
 });
-test("async observed outputs remain reactive until disposal; budgets span all cells", async () => {
+test("async observed outputs remain reactive until disposal; budgets are per cell", async () => {
     const host = engine();
     const run = await host.executeDocumentAsync('```rix\n$$amount := 2;\n$$view := .Text($amount);\n$view;\n```');
     const values = []; run.runs[0].liveOutput.observed.observe((value) => values.push(formatValue(value)));
     parseAndEvaluate('$amount := 7', { context: run.runtime.context, registry: run.runtime.registry, systemContext: run.runtime.systemContext });
     expect(values).toEqual(["7"]);
     await disposeNotebookRun(run);
-    await expect(host.executeDocumentAsync('```rix\n1+2+3;\n```\n```rix\n4+5+6;\n```', { maxSteps: 8 })).rejects.toThrow("step limit");
+    // A cell that exhausts its budget reports an error; earlier results
+    // survive and later cells run with a fresh budget.
+    const limited = await host.executeDocumentAsync('```rix\n2+3;\n```\n```rix\nx := 4;\n{@::@ k := 0; 1; k += 1; k };\n```\n```rix\n7;\n```', { maxSteps: 1000 });
+    expect(limited.runs[0].liveOutput.content).toBe("5");
+    expect(limited.runs[1].statements.map(({ kind }) => kind)).toEqual(["result", "error"]);
+    expect(limited.runs[1].statements[1].content).toContain("step limit");
+    expect(limited.runs[2].liveOutput.content).toBe("7");
     await host.dispose();
 });
 test("late uncooperative host values cannot replace a newer run", async () => {
