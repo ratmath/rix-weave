@@ -1,6 +1,6 @@
 # RiX static export showcase
 
-Open this folder as a project in RiX Notebook, then use **Export** (`⌘E`) with
+Open this folder as a project in RiX Weave, then use **Export** (`⌘E`) with
 all three static targets selected:
 
 - rendered Markdown;

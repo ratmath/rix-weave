@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RiX Notebook",
+  "productName": "RiX Weave",
   "version": "0.1.0",
   "identifier": "org.ratmath.rixnb",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "RiX Notebook",
+        "title": "RiX Weave",
         "width": 1280,
         "height": 840,
         "minWidth": 640,

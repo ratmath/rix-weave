@@ -1,6 +1,6 @@
-# RiX Notebook Web Surface
+# RiX Weave Web Surface
 
-`notebook-web/` is the browser-only core of RiX Notebook. It has no Tauri,
+`notebook-web/` is the browser-only core of RiX Weave. It has no Tauri,
 filesystem, dialog, Git, or macOS imports.
 
 * `../../../docshell/src/contracts.js` defines the narrow `NotebookEngine`,

@@ -39,7 +39,7 @@ export function projectThemeToml(theme = DEFAULT_PROJECT_THEME) {
   const section = (name) => Object.entries(theme[name])
     .map(([key, value]) => `${key} = ${tomlString(value)}`)
     .join("\n");
-  return `# Project presentation colors. Use CSS hex colors, named colors, or var(--custom-color).\n# Omit this file to use RiX Notebook's built-in palette.\nformat_version = 1\n\n[markdown]\n${section("markdown")}\n\n[rix]\n${section("rix")}\n`;
+  return `# Project presentation colors. Use CSS hex colors, named colors, or var(--custom-color).\n# Omit this file to use RiX Weave's built-in palette.\nformat_version = 1\n\n[markdown]\n${section("markdown")}\n\n[rix]\n${section("rix")}\n`;
 }
 
 export function parseProjectTheme(source) {

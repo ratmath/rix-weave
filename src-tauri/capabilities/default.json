@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Scoped project-file access for the main RiX Notebook window.",
+  "description": "Scoped project-file access for the main RiX Weave window.",
   "windows": ["main"],
   "permissions": [
     "core:default",

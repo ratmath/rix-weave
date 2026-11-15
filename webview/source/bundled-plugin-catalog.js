@@ -1,5 +1,5 @@
 /**
- * Plugins intentionally shipped in the RiX Notebook application.
+ * Plugins intentionally shipped in the RiX Weave application.
  *
  * These imports are static so Vite includes their trusted JavaScript in the
  * application bundle. Project plugins are added separately by

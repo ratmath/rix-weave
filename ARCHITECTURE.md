@@ -1,6 +1,6 @@
-# RiX Notebook host review
+# RiX Weave host review
 
-RiX Notebook has two host-specific workbenches around one RiX notebook engine,
+RiX Weave has two host-specific workbenches around one RiX notebook engine,
 document model, and output-widget protocol. Their differences are intentional
 host capabilities rather than separate language implementations.
 
@@ -31,7 +31,7 @@ rix-nb/
 │   ├── shells/               native and browser HTML hosts
 │   ├── src/                  contracts and storage/file services
 │   └── styles/               public shell tokens and browser chrome
-├── docshell.manifest.json    RiX Notebook's host configuration
+├── docshell.manifest.json    RiX Weave's host configuration
 ├── scripts/
 │   └── extract-docshell.mjs  creates ignored build inputs
 ├── webview/

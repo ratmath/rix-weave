@@ -1,6 +1,6 @@
-# RiX Notebook
+# RiX Weave
 
-RiX Notebook is a native macOS authoring environment for Markdown-first,
+RiX Weave is a native macOS authoring environment for Markdown-first,
 executable mathematical documents. A reusable DocShell host manages native and
 browser file/window concerns; the RiX WebView provides the editing, execution,
 and document-rendering experience.
@@ -81,7 +81,7 @@ See the [Shaped guide](../rix/documentation/eval/objects/shaped.md).
 
 ### Notebook controls
 
-RiX Notebook adds a notebook-host `.slider(...)` function; it is not a general
+RiX Weave adds a notebook-host `.slider(...)` function; it is not a general
 RiX runtime feature. A slider returns an exact RiX number and appears in the results pane.
 Moving it re-evaluates the document in source order.
 
@@ -134,7 +134,7 @@ The notebook has two deliberately separate plugin locations.
 Enable known plugins for every notebook in a project with `project.toml`, or
 only for one notebook with its `notebook.toml`. `plugin_dirs` is optional and
 is resolved relative to the manifest that declares it; entries from the app’s
-**RiX Notebook → Settings…** are scanned first. The standard `Project/plugins/`
+**RiX Weave → Settings…** are scanned first. The standard `Project/plugins/`
 directory remains available without configuration.
 
 ```toml
@@ -303,7 +303,7 @@ bun run build
 ```
 
 `bun run dev` is a development command only: it starts Vite's local hot-reload
-web server and launches Tauri against it. A packaged RiX Notebook application
+web server and launches Tauri against it. A packaged RiX Weave application
 contains the prebuilt WebView assets and does not require Bun or Node to run.
 
 Tauri writes development and build artifacts below `src-tauri/target/`; they are
@@ -323,7 +323,7 @@ when Playwright or Chrome are installed outside this project).
 
 ## Authoring, diagnostics, and host boundaries
 
-Authoring assistance, supported exports, and embedded RiXCel documents are
+Authoring assistance, supported exports, and embedded RiX Ripple documents are
 implemented. The [capstone tutorial](../rix/documentation/tutorial/capstones.md)
 connects publication, checked numerics, exact-number displays, coordinates,
 cancellation, and spreadsheet interchange. Note references never execute the

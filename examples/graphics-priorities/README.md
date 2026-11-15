@@ -1,6 +1,6 @@
 # RiX graphics priorities project
 
-Open this directory in RiX Notebook, or open a ZIP of the directory in the
+Open this directory in RiX Weave, or open a ZIP of the directory in the
 browser notebook. It contains five notebooks with five executable RiX studies
 for each original graphics priority, plus a focused coordinate-disclosure study.
 The examples are original RiX constructions
@@ -24,13 +24,13 @@ The project is also an acceptance corpus:
 
 ## Host relationship
 
-- **RiX Web** is the calculator/tutorial and reactive-widget host. It mounts
+- **RiX Playground** is the calculator/tutorial and reactive-widget host. It mounts
   `Graphic`, `Scene3D`, and `Timeline` values with the richest current browser
   interaction, but it does not yet open notebook project directories.
-- **RiX Notebook** is the project owner for this corpus. Native mode opens the
+- **RiX Weave** is the project owner for this corpus. Native mode opens the
   directory directly; browser mode opens a ZIP-backed virtual project. Both use
   the same notebook engine and shared RiX output-widget protocol.
-- **RiXCel** is a separate exact FormulaSheet application with its own sparse
+- **RiX Ripple** is a separate exact FormulaSheet application with its own sparse
   `.rixcel` event-log document. It shares the RiX evaluator and sheet widget
   protocol, but is not a notebook-project loader. Notebook examples can display
   `.Sheet` values; importing an entire `.rixcel` document will need an explicit
