@@ -8,7 +8,7 @@ const ratmathRoot = path.resolve(notebookRoot, "..");
 const outputRoot = path.join(notebookRoot, "public", "help");
 const rixDocs = path.join(ratmathRoot, "rix", "docs");
 
-const notebookReference = `# RiX Notebook reference
+const notebookReference = `# RiX Weave reference
 
 ## RiX fences
 
@@ -66,7 +66,7 @@ owned resources. Completed external effects are not rolled back.
 
 ## Embedded spreadsheets
 
-Use \`.cel(JSON text)\` for portable embedded RiXCel/RiXBook data, or
+Use \`.cel(JSON text)\` for portable embedded RiX Ripple/RiXBook data, or
 \`.celOpen("data.rixbook", "sales")\` for a project file relative to the current
 note. Browser file access requires an uploaded project ZIP; a standalone note
 cannot read adjacent files. A handle exposes \`.Sheet()\`, \`.View("name")\`,
@@ -96,9 +96,9 @@ await cp(rixDocs, path.join(outputRoot, "reference-site"), { recursive: true });
 await writeFile(path.join(outputRoot, "notebook-reference.md"), notebookReference);
 
 await writeFile(path.join(outputRoot, "index.json"), JSON.stringify({
-  notebook: [{ id: "notebook-reference", title: "RiX Notebook reference", path: "notebook-reference.md" }],
+  notebook: [{ id: "notebook-reference", title: "RiX Weave reference", path: "notebook-reference.md" }],
   references: [{ id: "rix-reference-site", title: "RiX language reference", htmlPath: "reference-site/index.html" }],
   tutorials: [{ id: "rix-tutorial-site", title: "RiX tutorials", url: "https://rix.ratmath.com/tutorial/" }],
 }, null, 2));
 
-console.log("Bundled the RiX Quarto documentation site and RiX Notebook reference.");
+console.log("Bundled the RiX Quarto documentation site and RiX Weave reference.");

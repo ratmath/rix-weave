@@ -26,7 +26,7 @@ import { mountNotebookWeb } from "../notebook-web/workbench.js";
 const filePolicy = createFilePolicy(docshellManifest.files);
 configureLocalDocumentStorage("rix-notebook-web");
 
-const starter = `# Welcome to RiX Notebook Web
+const starter = `# Welcome to RiX Weave Web
 
 This is an ordinary Markdown file running entirely in your browser.
 
@@ -201,7 +201,7 @@ async function saveBlobWithPicker(blob, suggestedName, description) {
 }
 async function saveArchive(saveAs = false) {
   const name = archiveName(); const blob = new Blob([createZipProject(store)], { type: "application/zip" });
-  if (await saveBlobWithPicker(blob, name, "RiX Notebook project")) return;
+  if (await saveBlobWithPicker(blob, name, "RiX Weave project")) return;
   const requested = saveAs ? window.prompt("Project ZIP filename", name) : name; if (!requested) return;
   downloadBlob(blob, normalizedFilename(requested, ".zip")); elements.status.textContent = `Downloaded ${normalizedFilename(requested, ".zip")}; Safari cannot choose a download location.`;
 }
@@ -366,7 +366,7 @@ exportDialog.addEventListener("close", async () => {
     if (workspaceKind === "single" && targets.markdown && Object.values(targets).filter(Boolean).length === 1 && entries.length === 1) {
       const [path, source] = entries[0]; const name = `${filename.replace(/\.(?:md|markdown)$/i, "") || "rix-notebook"}-rendered.md`; downloadBlob(new Blob([source], { type: "text/markdown;charset=utf-8" }), name); elements.status.textContent = `Downloaded ${name}; Safari cannot choose a download location.`; return;
     }
-    const name = archiveName("-export"); const blob = new Blob([createZipProject(output)], { type: "application/zip" }); if (await saveBlobWithPicker(blob, name, "RiX Notebook export")) return;
+    const name = archiveName("-export"); const blob = new Blob([createZipProject(output)], { type: "application/zip" }); if (await saveBlobWithPicker(blob, name, "RiX Weave export")) return;
     const requested = window.prompt("Export filename", name); if (!requested) return; const exportName = normalizedFilename(requested, ".zip"); downloadBlob(blob, exportName); elements.status.textContent = `Downloaded ${exportName}; Safari cannot choose a download location.`;
   } catch (error) { elements.status.textContent = `Could not export: ${error.message}`; }
 });

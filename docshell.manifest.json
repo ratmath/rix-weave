@@ -3,7 +3,7 @@
   "formatVersion": 1,
   "product": {
     "name": "RiX Notebook",
-    "browserName": "RiX Notebook Web",
+    "browserName": "RiX Weave Web",
     "description": "Markdown-first executable mathematical documents"
   },
   "entrypoints": {
@@ -24,7 +24,7 @@
       "export": "Export…",
       "quickExport": "Export Notebook / Project",
       "toggleOutput": "Toggle Preview / Results",
-      "help": "RiX Notebook Help",
+      "help": "RiX Weave Help",
       "reference": "RiX Language Reference",
       "tutorials": "RiX Tutorials"
     }

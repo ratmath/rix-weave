@@ -3,7 +3,7 @@
 These studies combine GeoGebra-style construction workflows, Desmos's compact
 transformation tools, and JSXGraph's dependency-driven objects. Each result is
 already representable by the exact kernel; the priority is making it reachable
-from the RiX Web toolbar.
+from the RiX Playground toolbar.
 
 ## 1. Construct a line and circle from selected points
 

@@ -1,6 +1,6 @@
 # Cel inside Notebook
 
-Open this directory as a project in native RiX Notebook, or upload a ZIP of this
+Open this directory as a project in native RiX Weave, or upload a ZIP of this
 directory in Notebook Web. Open **Exact workbook totals → report.md** and run it.
 The `.celOpen` paths are relative to the note, so `Analysis/data.rixbook` is read
 from the existing project grant or uploaded ZIP. No network request is made.

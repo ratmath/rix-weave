@@ -49,7 +49,7 @@ function readTomlStringArray(source, key) {
   return value;
 }
 
-const STARTER_NOTE = `# Welcome to RiX Notebook
+const STARTER_NOTE = `# Welcome to RiX Weave
 
 This note is ordinary Markdown with inline mathematics: $a^2 + b^2 = c^2$.
 
